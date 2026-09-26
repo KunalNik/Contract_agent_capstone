@@ -1,5 +1,22 @@
 # Contract Agent Capstone: Prioritized Audit Report
 
+> **Fix status:** the findings in this report and `BUG_REPORT.md`, plus about 25 more found during the third review, are fixed on `Project1`. They were fixed in these commits:
+>
+> | Commit | Scope |
+> |---|---|
+> | `6bcb3ad` | Startup, chat and guards |
+> | `70723c5` | Contract intelligence |
+> | `fd7d657` | Uploads |
+> | `59f0d27` | Policies, patterns, supervisor, search, MCP, feedback and audit |
+> | `c328c0c` | Security configuration, frontend build and Docker |
+>
+> Verification:
+> - `pytest -q` passes 80 offline regression tests.
+> - `scripts/repro_bugs.py` reports **0/23** reproduced.
+> - `npm run build` passes.
+>
+> See "Remaining limitations" at the end of this report.
+
 **Branch:** `Project1` · **Builds on:** the repository inventory (Prompt 1) and `BUG_REPORT.md`
 
 **Evidence:** `scripts/repro_bugs.py` runs the real app with Neo4j and Gemini stubbed out. On this branch it reproduces **23 of 23 checks**. Every item below gives its check ID, so you can rerun it with:
@@ -438,3 +455,40 @@ curl :8000/api/policies/nope
 - S3/S4 (auth) must land before S1 (tenant binding) can use a trusted tenant.
 - F2 (`get_chat_model`) comes before F4 and F5e.
 - F6's embedding work comes before F10's `search_clause_library`.
+
+
+---
+
+## Remaining limitations (not fixed)
+
+These are design decisions or follow-up work, not quick fixes.
+
+1. **No login flow.** Production now requires a signed JWT (`AUTH_MODE=jwt`, claims `sub`, `role`, `tenant_id`), but nothing issues tokens yet. `governance.rbac.create_access_token` exists for scripts and tests. Choosing an identity provider is a team decision.
+2. **The workflow tracker is process-wide.** The live agent-workflow panel shows the most recent run on the server, not per user or tenant.
+3. **The planner is still rule-based.** It is fed a fixed query, so it always picks the same strategy. Both analysis paths now give consistent results.
+4. **The output guard runs after streaming.** PII is redacted while streaming. An answer blocked for other reasons is shown briefly and then retracted by a `retract` event.
+5. **"Llama Guard" is Gemini.** It is prompted with the Llama Guard taxonomy and does not call a Llama Guard model.
+6. **Some schema duplication remains.** `Section`/`Clause` nodes use either `id` or `section_id`/`clause_id` depending on which pipeline wrote them. Queries now match both relationship paths.
+7. **Lint and legacy tests.** 26 ESLint style errors remain (`no-explicit-any` and similar); the build passes. The live-service scripts under `tests/` were not updated.
+
+### One-off data migration for existing databases
+
+Run this once on databases created before these fixes:
+
+```cypher
+// Contracts assigned to the old demo tenant by the enterprise migration
+MATCH (c:Contract {tenant_id: 'demo_tenant_1'}) SET c.tenant_id = 'default-tenant';
+
+// Party nodes used to be shared across tenants: split them per tenant
+MATCH (p:Party)-[r:PARTY_TO]->(c:Contract)
+WHERE p.tenant_id IS NULL
+MERGE (tp:Party {name: p.name, tenant_id: c.tenant_id})
+MERGE (tp)-[:PARTY_TO {role: r.role}]->(c)
+DELETE r;
+MATCH (p:Party) WHERE p.tenant_id IS NULL AND NOT (p)--() DELETE p;
+
+// Stale aggregate markers from failed runs stored as "completed" cannot be
+// told apart automatically; re-run analysis for contracts with risk_level 'UNKNOWN'
+MATCH (c:Contract {intelligence_status: 'completed', risk_level: 'UNKNOWN'})
+SET c.intelligence_status = 'needs_reanalysis';
+```

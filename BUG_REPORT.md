@@ -1,5 +1,7 @@
 # Contract Agent Capstone: Bug Audit (second pass)
 
+> **Status:** fixed on `Project1`. See the fix-status note and remaining limitations in `AUDIT_REPORT.md`.
+
 Branch audited: `Project1` @ `7b7ac9a`
 
 ## How this pass was verified
