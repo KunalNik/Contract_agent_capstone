@@ -6,6 +6,7 @@ class IntelligenceState(TypedDict):
     
     # Input data
     contract_text: str
+    contract_id: str
     
     # Processing results (structured data, not strings)
     extracted_clauses: List[dict]
@@ -21,6 +22,9 @@ class IntelligenceState(TypedDict):
     # Pattern analysis results (NEW)
     pattern_used: str
     pattern_analysis: dict
+
+    # CUAD validation (was silently dropped because the key was undeclared)
+    validation_result: Any
     
     # Workflow metadata
     messages: List[Any]

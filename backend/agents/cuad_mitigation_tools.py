@@ -190,7 +190,8 @@ class PrecedentMatcherTool(BaseTool):
                         "precedent_count": len(precedents),
                         "approval_rate": self._calculate_approval_rate(precedents),
                         "risk_patterns": self._identify_risk_patterns(precedents),
-                        "recommendations": self._generate_recommendations(precedents)
+                        "recommendations": self._generate_recommendations(precedents),
+                        "data_source": "illustrative_baseline"
                     })
             
             return json.dumps(matches)
@@ -202,6 +203,8 @@ class PrecedentMatcherTool(BaseTool):
     def _find_similar_clauses(self, clause: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Find similar clauses (simplified for Phase 1)"""
         clause_type = clause.get("clause_type", "").lower()
+        # "Payment Terms" / "Limitation of Liability" -> baseline keys
+        clause_type = "payment" if "payment" in clause_type else "liability" if "liabilit" in clause_type else clause_type
         
         # Mock precedent data for Phase 1
         mock_precedents = {

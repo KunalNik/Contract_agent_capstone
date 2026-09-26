@@ -77,6 +77,10 @@ class WorkflowTracker:
         
     def complete_workflow(self):
         """Complete the workflow tracking"""
+        if self.workflow_start_time is None:
+            # complete_workflow() without start_workflow() used to raise TypeError
+            # and abort the whole analysis on a freshly started server
+            self.workflow_start_time = datetime.now()
         total_time = int((datetime.now() - self.workflow_start_time).total_seconds() * 1000)
         
         logger.info("🏁 MULTI-AGENT WORKFLOW COMPLETED")

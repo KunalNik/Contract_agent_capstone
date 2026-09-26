@@ -21,6 +21,24 @@ class ThoughtStep:
     confidence: float
 
 
+def _clause_type(clause: Dict[str, Any]) -> str:
+    """Clauses from the extractor use 'clause_type'; older callers used 'type'."""
+    return clause.get('clause_type') or clause.get('type') or 'general'
+
+
+def _normalise_type(clause_type: str) -> str:
+    """Map display names ('Payment Terms') onto policy applies_to keys ('payment')."""
+    lower = clause_type.lower()
+    for key in ('liability', 'termination', 'payment', 'confidentiality', 'indemnification'):
+        if key in lower:
+            return key
+    if 'intellectual property' in lower or lower.split()[:1] == ['ip']:
+        return 'intellectual_property'
+    if 'data' in lower or 'privacy' in lower:
+        return 'data_protection'
+    return lower
+
+
 class ChainOfThoughtAgent(BasePatternAgent):
     """Chain-of-Thought: Explicit step-by-step reasoning (SOLID: SRP, DIP)"""
     
@@ -38,6 +56,7 @@ class ChainOfThoughtAgent(BasePatternAgent):
     
     async def _execute_pattern(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """CoT-specific logic reusing existing tools (DRY principle)"""
+        self.thought_chain = []  # agents are reused; don't carry steps across calls
         task_type = context.get('task_type', 'risk_assessment')
         
         if task_type == 'risk_assessment':
@@ -49,14 +68,15 @@ class ChainOfThoughtAgent(BasePatternAgent):
     
     async def _risk_assessment_chain(self, context: Dict[str, Any]) -> Dict[str, Any]:
         clauses = context.get('clauses', [])
-        tenant_id = context.get('tenant_id', 'default')
+        from backend.shared.utils.request_context import current_tenant
+        tenant_id = context.get('tenant_id') or current_tenant()
         contract_type = context.get('contract_type', 'general')
         
         # Step 1: Identify clauses
         step1 = await self._add_thought_step(
             1, "Identify Contract Clauses",
             {'clauses_count': len(clauses)},
-            {'identified_clauses': [c.get('type', 'unknown') for c in clauses]},
+            {'identified_clauses': [_clause_type(c) for c in clauses]},
             f"Found {len(clauses)} clauses in contract for analysis",
             0.9
         )
@@ -78,7 +98,7 @@ class ChainOfThoughtAgent(BasePatternAgent):
         violations = []
         for clause in clauses:
             clause_content = clause.get('content', '').lower()
-            clause_type = clause.get('type', 'general')
+            clause_type = _normalise_type(_clause_type(clause))
             
             # Check against loaded policies
             for policy in policies:
@@ -112,7 +132,8 @@ class ChainOfThoughtAgent(BasePatternAgent):
             0.8
         )
         
-        # Step 5: Final assessment
+        # Step 5: Final assessment - overall risk (0-10) is driven by the worst violation
+        overall_risk = max((self._severity_to_risk_score(v['severity']) for v in violations), default=0)
         final_confidence = sum(step.confidence for step in self.thought_chain) / len(self.thought_chain)
         
         step5 = await self._add_thought_step(
@@ -224,7 +245,7 @@ class ChainOfThoughtAgent(BasePatternAgent):
             for term in prohibited_terms:
                 if term in clause_content and term in rule_text:
                     return {
-                        'clause_type': clause.get('type', 'unknown'),
+                        'clause_type': _clause_type(clause),
                         'violation': f"Clause contains prohibited term: {term}",
                         'severity': policy.severity,
                         'policy_rule_id': policy.id
@@ -236,7 +257,7 @@ class ChainOfThoughtAgent(BasePatternAgent):
             for term in mandatory_terms:
                 if term in rule_text and term not in clause_content:
                     return {
-                        'clause_type': clause.get('type', 'unknown'),
+                        'clause_type': _clause_type(clause),
                         'violation': f"Clause missing mandatory term: {term}",
                         'severity': policy.severity,
                         'policy_rule_id': policy.id

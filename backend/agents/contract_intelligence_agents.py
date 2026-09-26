@@ -21,7 +21,7 @@ class IntelligenceOrchestrator:
         self.llm = llm
         self.workflow = self._build_workflow()
         self.planning_agent = PlanningAgentFactory.create_planning_agent()
-        self.execution_engine = PlanExecutionEngine()
+        self.execution_engine = PlanExecutionEngine(llm=llm)
     
     def _build_workflow(self) -> StateGraph:
         """Build workflow with proper state management"""
@@ -60,7 +60,7 @@ class IntelligenceOrchestrator:
         )
         
         try:
-            tool = ClauseDetectorTool()
+            tool = ClauseDetectorTool(llm=self.llm)
             clauses_json = tool._run(state["contract_text"])
             clauses_list = json.loads(clauses_json)
             
@@ -82,7 +82,7 @@ class IntelligenceOrchestrator:
         from backend.agents.patterns.pattern_selector import PatternSelector
         from backend.agents.patterns.react_agent import ReACTAgent
         from backend.agents.patterns.chain_of_thought_agent import ChainOfThoughtAgent
-        import asyncio
+        from backend.shared.utils.async_utils import run_coro_sync
         
         # Select pattern based on complexity
         pattern = PatternSelector.select_pattern({
@@ -92,8 +92,8 @@ class IntelligenceOrchestrator:
         })
         
         if pattern == "react":
-            agent = ReACTAgent(max_iterations=3)
-            result = asyncio.run(agent.execute({
+            agent = ReACTAgent(max_iterations=3, llm=self.llm)
+            result = run_coro_sync(agent.execute({
                 'contract_text': state['contract_text'],
                 'clauses': state['extracted_clauses'],
                 'contract_id': state.get('contract_id', 'unknown')
@@ -107,7 +107,7 @@ class IntelligenceOrchestrator:
         
         elif pattern == "chain_of_thought":
             agent = ChainOfThoughtAgent()
-            result = asyncio.run(agent.execute({
+            result = run_coro_sync(agent.execute({
                 'clauses': state['extracted_clauses'],
                 'task_type': 'risk_assessment',
                 'contract_id': state.get('contract_id', 'unknown')
@@ -371,45 +371,42 @@ class IntelligenceOrchestrator:
                 "precedent_matches": []
             }
     
-    def analyze_contract(self, contract_text: str, use_planning: bool = True) -> dict:
-        """Run analysis with optional autonomous planning"""
+    def analyze_contract(self, contract_text: str, use_planning: bool = True, contract_id: str = "unknown") -> dict:
+        """Run analysis with optional autonomous planning.
+
+        Synchronous; callers inside an event loop should run it in a worker
+        thread (``asyncio.to_thread``) so the API stays responsive.
+        """
+        from backend.shared.utils.async_utils import run_coro_sync
+
+        self.contract_id = contract_id
         try:
             if use_planning:
                 try:
-                    # Use asyncio.run with proper event loop handling
-                    import asyncio
-                    try:
-                        # Try to get current loop
-                        loop = asyncio.get_running_loop()
-                        # If we're in an event loop, create a task
-                        import concurrent.futures
-                        with concurrent.futures.ThreadPoolExecutor() as executor:
-                            future = executor.submit(asyncio.run, self._analyze_with_planning(contract_text))
-                            return future.result()
-                    except RuntimeError:
-                        # No event loop running, safe to use asyncio.run
-                        return asyncio.run(self._analyze_with_planning(contract_text))
+                    return run_coro_sync(self._analyze_with_planning(contract_text))
                 except Exception as planning_error:
                     logger.error(f"Planning agent failed: {planning_error}, falling back to traditional workflow")
                     return self._analyze_traditional(contract_text)
-            else:
-                return self._analyze_traditional(contract_text)
-            
+            return self._analyze_traditional(contract_text)
+
         except Exception as e:
-            logger.error(f"Analysis failed: {e}")
+            logger.error(f"Analysis failed: {e}", exc_info=True)
             return {
                 "clauses": [],
                 "violations": [],
                 "risk_assessment": {"overall_risk_score": 0, "risk_level": "UNKNOWN"},
                 "redlines": [],
-                "processing_complete": False
+                "processing_complete": False,
+                "error": str(e),
             }
-    
+
     async def _analyze_with_planning(self, contract_text: str) -> dict:
         """Analyze contract using autonomous planning agent"""
         logger.info("🧠 STEP 1: Starting Planning Agent Analysis")
         
+        planning_execution = None
         try:
+            workflow_tracker.start_workflow()
             # Step 1: Track planning agent
             planning_execution = workflow_tracker.start_agent(
                 "Autonomous Planning Agent",
@@ -445,10 +442,8 @@ class IntelligenceOrchestrator:
             
         except Exception as e:
             # Mark planning agent as failed if we have the execution reference
-            try:
+            if planning_execution is not None:
                 workflow_tracker.error_agent(planning_execution, f"Planning failed: {str(e)}")
-            except:
-                pass  # planning_execution might not be defined if error occurred early
             
             logger.error(f"🧠 PLANNING AGENT ERROR at step: {e}")
             import traceback
@@ -470,6 +465,8 @@ class IntelligenceOrchestrator:
             "cuad_deviations": [],
             "jurisdiction_info": {},
             "precedent_matches": [],
+            "contract_id": getattr(self, "contract_id", "unknown"),
+            "validation_result": None,
             "messages": [],
             "current_step": "",
             "processing_result": None,
@@ -494,7 +491,7 @@ class IntelligenceOrchestrator:
             "validation_result": final_state.get("validation_result"),
             "pattern_used": final_state.get("pattern_used", "Standard"),
             "pattern_analysis": final_state.get("pattern_analysis", {}),
-            "processing_complete": final_state["is_complete"]
+            "processing_complete": final_state.get("is_complete", False)
         }
 
 class ContractIntelligenceAgentFactory:

@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, Query, BackgroundTasks, Depends, Request
-from backend.governance.rbac import Permission, requires_permission
+from backend.governance.rbac import Permission, requires_permission, get_current_tenant
+from backend.shared.utils.utils import to_json_safe
 from fastapi.responses import StreamingResponse
 from backend.application.services.contract_intelligence_service import ContractIntelligenceServiceFactory
 from backend.llm_manager import LLMManager
@@ -24,10 +25,10 @@ def get_llm_manager(request: Request):
 @router.post("/contracts/{contract_id}/analyze", dependencies=[Depends(requires_permission(Permission.ANALYZE))])
 async def analyze_contract_intelligence(
     contract_id: str,
-    tenant_id: str = Query(default="default-tenant", description="Tenant ID for data isolation"),
     model: str = Query(default="gemini-2.5-flash", description="LLM model to use for analysis"),
     use_planning: bool = Query(default=True, description="Use autonomous planning agent"),
-    llm_mgr: LLMManager = Depends(get_llm_manager)
+    llm_mgr: LLMManager = Depends(get_llm_manager),
+    tenant_id: str = Depends(get_current_tenant),
 ):
     """
     Perform comprehensive contract intelligence analysis using multi-agent system
@@ -48,6 +49,10 @@ async def analyze_contract_intelligence(
         
         if not intelligence:
             raise HTTPException(status_code=404, detail=f"Contract {contract_id} not found or has no content")
+
+        if intelligence.status == "failed":
+            # Do not present a failed run as a zero-risk result
+            raise HTTPException(status_code=502, detail=f"Analysis failed: {intelligence.error}")
         
         # Convert to response format with performance info
         response = {
@@ -111,8 +116,8 @@ async def analyze_contract_intelligence(
         logger.error(f"Intelligence analysis failed for contract {contract_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
-@router.get("/contracts/{contract_id}/status")
-async def get_intelligence_status(contract_id: str):
+@router.get("/contracts/{contract_id}/status", dependencies=[Depends(requires_permission(Permission.VIEW_REPORTS))])
+async def get_intelligence_status(contract_id: str, tenant_id: str = Depends(get_current_tenant)):
     """Get the current intelligence analysis status for a contract"""
     
     try:
@@ -126,19 +131,23 @@ async def get_intelligence_status(contract_id: str):
                c.clauses_count as clauses_count,
                c.redlines_count as redlines_count,
                c.processing_time as processing_time,
-               c.intelligence_updated as updated
+               c.intelligence_updated as updated,
+               c.last_analysis_status as last_analysis_status,
+               c.last_analysis_error as last_analysis_error
         """
         
-        result = repository.graph.query(query, {"contract_id": contract_id, "tenant_id": "default-tenant"})
+        result = repository.graph.query(query, {"contract_id": contract_id, "tenant_id": tenant_id})
         
         if not result:
             raise HTTPException(status_code=404, detail=f"Contract {contract_id} not found")
         
         contract_data = result[0]
         
-        return {
+        return to_json_safe({
             "contract_id": contract_id,
-            "intelligence_status": contract_data.get("status", "not_analyzed"),
+            "intelligence_status": contract_data.get("status") or "not_analyzed",
+            "last_analysis_status": contract_data.get("last_analysis_status"),
+            "last_analysis_error": contract_data.get("last_analysis_error"),
             "risk_score": contract_data.get("risk_score"),
             "risk_level": contract_data.get("risk_level"),
             "violations_count": contract_data.get("violations_count", 0),
@@ -146,7 +155,7 @@ async def get_intelligence_status(contract_id: str):
             "redlines_count": contract_data.get("redlines_count", 0),
             "processing_time": contract_data.get("processing_time"),
             "last_updated": contract_data.get("updated")
-        }
+        })
         
     except HTTPException:
         raise
@@ -158,9 +167,9 @@ async def get_intelligence_status(contract_id: str):
 async def batch_analyze_contracts(
     background_tasks: BackgroundTasks,
     contract_ids: list[str],
-    tenant_id: str = Query(default="default-tenant", description="Tenant ID for data isolation"),
     model: str = Query(default="gemini-2.5-flash", description="LLM model to use for analysis"),
-    llm_mgr: LLMManager = Depends(get_llm_manager)
+    llm_mgr: LLMManager = Depends(get_llm_manager),
+    tenant_id: str = Depends(get_current_tenant),
 ):
     """
     Batch analyze multiple contracts for intelligence
@@ -200,7 +209,7 @@ async def batch_analyze_contracts(
         raise HTTPException(status_code=500, detail=f"Batch analysis failed: {str(e)}")
 
 @router.get("/dashboard/summary", dependencies=[Depends(requires_permission(Permission.VIEW_REPORTS))])
-async def get_intelligence_dashboard():
+async def get_intelligence_dashboard(tenant_id: str = Depends(get_current_tenant)):
     """Get summary statistics for intelligence dashboard"""
     
     try:
@@ -217,17 +226,18 @@ async def get_intelligence_dashboard():
             sum(c.redlines_count) as total_redlines
         """
         
-        result = repository.graph.query(query, {"tenant_id": "default-tenant"})
+        result = repository.graph.query(query, {"tenant_id": tenant_id})
         
         if result:
             stats = result[0]
+            # Aggregates are NULL (not absent) when nothing has been analysed yet
             return {
-                "total_contracts_analyzed": stats.get("total_analyzed", 0),
-                "average_risk_score": round(stats.get("avg_risk_score", 0.0), 2),
-                "high_risk_contracts": stats.get("high_risk_count", 0),
-                "total_violations_found": stats.get("total_violations", 0),
-                "total_clauses_extracted": stats.get("total_clauses", 0),
-                "total_redlines_generated": stats.get("total_redlines", 0)
+                "total_contracts_analyzed": stats.get("total_analyzed") or 0,
+                "average_risk_score": round(stats.get("avg_risk_score") or 0.0, 2),
+                "high_risk_contracts": stats.get("high_risk_count") or 0,
+                "total_violations_found": stats.get("total_violations") or 0,
+                "total_clauses_extracted": stats.get("total_clauses") or 0,
+                "total_redlines_generated": stats.get("total_redlines") or 0
             }
         else:
             return {
@@ -253,7 +263,7 @@ async def get_available_models(llm_mgr: LLMManager = Depends(get_llm_manager)):
         return {
             "available_models": available_models,
             "default_model": "gemini-2.5-flash",
-            "recommended_models": ["gemini-2.5-flash", "gemini-1.5-pro"]
+            "recommended_models": [m for m in ["gemini-2.5-flash", "gemini-2.5-pro"] if m in available_models]
         }
         
     except Exception as e:

@@ -1,6 +1,6 @@
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
-from typing import Type, Dict, Any, List
+from typing import Type, Dict, Any, List, Optional
 from backend.domain.entities import ContractClause, PolicyViolation, RiskAssessment, RedlineRecommendation
 import json
 import logging
@@ -48,69 +48,148 @@ COMPANY_POLICIES = {
     }
 }
 
+def _is_ip_clause(clause_type: str) -> bool:
+    """True for IP clauses; avoids matching 'ip' inside Shipping/Relationship/Membership."""
+    import re
+    lower = clause_type.lower()
+    return bool(re.search(r"\bip\b", lower)) or "intellectual property" in lower
+
+
 # Clause Extraction Agent Tools
 class ClauseDetectorInput(BaseModel):
     contract_text: str = Field(description="Contract text to analyze for clauses")
+
+
+CLAUSE_TYPES = [
+    "Payment Terms", "Liability", "Indemnification", "Confidentiality",
+    "Termination", "IP Ownership", "Governing Law", "Warranty", "Auto-Renewal",
+    "Non-Compete", "Exclusivity", "Data Protection",
+]
+
+# Keyword heuristics used when no LLM is available (and as a safety net when
+# the LLM call fails). Each entry: clause type -> (trigger regexes, HIGH-risk regexes)
+_CLAUSE_RULES = {
+    "Payment Terms": ([r"\bpayment\b", r"\binvoice", r"\bnet\s*\d{2}\b", r"\bfees?\s+(are|shall be)\s+(due|payable)"],
+                      [r"\bnet\s*(60|90|120)\b", r"\b(60|90|120)\s+days\b"]),
+    "Liability": ([r"\bliabilit", r"\bconsequential damages\b", r"\bindirect damages\b"],
+                  [r"\bunlimited liability\b", r"\bno limitation\b", r"\bconsequential damages\b"]),
+    "Indemnification": ([r"\bindemnif", r"\bhold harmless\b"],
+                        [r"\bany and all claims\b", r"\bnegligence of (the )?client\b"]),
+    "Confidentiality": ([r"\bconfidential", r"\bnon-disclosure\b"], [r"\bperpetual(ly)?\b"]),
+    "Termination": ([r"\bterminat"], [r"\bimmediate(ly)? terminat", r"\bwithout (prior )?notice\b"]),
+    "IP Ownership": ([r"\bintellectual property\b", r"\bwork made for hire\b", r"\bassigns? all (right|title)"],
+                     [r"\bassigns? all (right|title)", r"\bpre-existing\b.*\bassign"]),
+    "Governing Law": ([r"\bgoverned by\b", r"\bgoverning law\b", r"\bjurisdiction\b"], []),
+    "Warranty": ([r"\bwarrant(y|ies|s)\b"], [r"\bas is\b", r"\bdisclaims? all warrant"]),
+    "Auto-Renewal": ([r"\bautomatically renew", r"\bauto-renew"], [r"\bautomatically renew"]),
+    "Non-Compete": ([r"\bnon-?compet", r"\bshall not compete\b"], [r"\bnon-?compet"]),
+    "Exclusivity": ([r"\bexclusiv"], [r"\bexclusive\b"]),
+    "Data Protection": ([r"\bpersonal data\b", r"\bgdpr\b", r"\bdata protection\b"], [r"\bindefinitely\b"]),
+}
+
+
+def _split_sentences(text: str) -> List[str]:
+    import re
+    parts = re.split(r"(?<=[.;])\s+(?=[A-Z0-9(])|\n{2,}", text)
+    return [p.strip() for p in parts if len(p.strip()) > 25]
+
+
+def extract_clauses_heuristic(contract_text: str, max_per_type: int = 2) -> List[Dict[str, Any]]:
+    """Deterministic keyword-based clause extraction from the actual contract text."""
+    import re
+    sentences = _split_sentences(contract_text)
+    clauses: List[Dict[str, Any]] = []
+    for clause_type, (triggers, high_risk) in _CLAUSE_RULES.items():
+        found = 0
+        for idx, sentence in enumerate(sentences):
+            lower = sentence.lower()
+            if not any(re.search(t, lower) for t in triggers):
+                continue
+            risk = "HIGH" if any(re.search(h, lower) for h in high_risk) else "MEDIUM" if clause_type in (
+                "Liability", "Indemnification", "IP Ownership", "Termination") else "LOW"
+            clauses.append({
+                "clause_type": clause_type,
+                "content": sentence[:1000],
+                "risk_level": risk,
+                "confidence_score": 0.6,
+                "location": f"Sentence {idx + 1}",
+                "extraction_method": "heuristic",
+            })
+            found += 1
+            if found >= max_per_type:
+                break
+    return clauses
+
 
 class ClauseDetectorTool(BaseTool):
     name: str = "clause_detector"
     description: str = "Detect and extract key contract clauses"
     args_schema: Type[BaseModel] = ClauseDetectorInput
-    
+    # Optional chat model. Without one (or if the call fails) the tool falls back
+    # to keyword heuristics over the real text - it never returns canned clauses.
+    llm: Optional[Any] = Field(default=None, exclude=True)
+
+    WINDOW_CHARS: int = 8000
+    MAX_WINDOWS: int = 4
+
     def _run(self, contract_text: str) -> str:
         """Extract clauses from contract text"""
-        try:
-            # Truncate for LLM processing
-            text = contract_text[:6000] if len(contract_text) > 6000 else contract_text
-            
-            prompt = f"""
-            Extract key contract clauses from this text. Return ONLY a JSON array of clauses.
-            
-            Text: {text}
-            
-            Return exactly this format:
-            [
-                {{
-                    "clause_type": "Payment Terms",
-                    "content": "extracted clause text",
-                    "risk_level": "MEDIUM",
-                    "confidence_score": 0.9,
-                    "location": "Section 3.1"
-                }}
-            ]
-            
-            Focus on these clause types:
-            - Payment Terms
-            - Liability
-            - Confidentiality  
-            - Termination
-            - IP Ownership
-            """
-            
-            # This would use the LLM - simplified for prototype
-            clauses = [
-                {
-                    "clause_type": "Payment Terms",
-                    "content": "Payment due within 30 days of invoice",
-                    "risk_level": "LOW",
-                    "confidence_score": 0.8,
-                    "location": "Section 3"
-                },
-                {
-                    "clause_type": "Liability",
-                    "content": "Liability limited to $50,000",
-                    "risk_level": "HIGH", 
-                    "confidence_score": 0.9,
-                    "location": "Section 8"
-                }
-            ]
-            
-            logger.info(f"Extracted {len(clauses)} clauses")
-            return json.dumps(clauses)
-            
-        except Exception as e:
-            logger.error(f"Clause detection failed: {e}")
+        if not contract_text or not contract_text.strip():
             return json.dumps([])
+        clauses: List[Dict[str, Any]] = []
+        if self.llm is not None:
+            try:
+                clauses = self._extract_with_llm(contract_text)
+            except Exception as e:
+                logger.error(f"LLM clause extraction failed, using heuristics: {e}")
+        if not clauses:
+            clauses = extract_clauses_heuristic(contract_text)
+        logger.info(f"Extracted {len(clauses)} clauses")
+        return json.dumps(clauses)
+
+    def _extract_with_llm(self, contract_text: str) -> List[Dict[str, Any]]:
+        from backend.governance.llm_judge import _extract_json
+
+        windows = [contract_text[i:i + self.WINDOW_CHARS]
+                   for i in range(0, len(contract_text), self.WINDOW_CHARS)][: self.MAX_WINDOWS]
+        results: List[Dict[str, Any]] = []
+        seen = set()
+        for n, window in enumerate(windows, 1):
+            prompt = (
+                "Extract the key clauses from this contract excerpt. Quote clause text verbatim.\n"
+                f"Allowed clause_type values: {', '.join(CLAUSE_TYPES)}.\n"
+                "risk_level is one of LOW, MEDIUM, HIGH, CRITICAL from the perspective of the service provider.\n"
+                'Respond ONLY with JSON: {"clauses": [{"clause_type": "...", "content": "...", '
+                '"risk_level": "...", "confidence_score": 0.0-1.0, "location": "section number or heading"}]}\n\n'
+                f"Excerpt {n}/{len(windows)}:\n{window}"
+            )
+            response = self.llm.invoke(prompt)
+            raw = response.content if hasattr(response, "content") else str(response)
+            if isinstance(raw, list):
+                raw = "".join(p.get("text", "") if isinstance(p, dict) else str(p) for p in raw)
+            data = _extract_json(raw)
+            items = data.get("clauses", []) if isinstance(data, dict) else data
+            for item in items or []:
+                content = str(item.get("content", "")).strip()
+                ctype = str(item.get("clause_type", "")).strip()
+                key = (ctype.lower(), content[:80].lower())
+                if not content or key in seen:
+                    continue
+                seen.add(key)
+                risk = str(item.get("risk_level", "MEDIUM")).upper()
+                try:
+                    confidence = max(0.0, min(1.0, float(item.get("confidence_score", 0.7))))
+                except (TypeError, ValueError):
+                    confidence = 0.7
+                results.append({
+                    "clause_type": ctype or "General",
+                    "content": content[:2000],
+                    "risk_level": risk if risk in ("LOW", "MEDIUM", "HIGH", "CRITICAL") else "MEDIUM",
+                    "confidence_score": confidence,
+                    "location": str(item.get("location", "")),
+                    "extraction_method": "llm",
+                })
+        return results
 
 # Policy Compliance Agent Tools
 class PolicyCheckerInput(BaseModel):
@@ -192,7 +271,7 @@ class PolicyCheckerTool(BaseTool):
                         })
                 
                 # Check IP ownership against company policy
-                if "ip" in clause_type.lower() or "intellectual property" in clause_type.lower():
+                if _is_ip_clause(clause_type):
                     if any(term in content for term in ["client owns all", "assignment of rights", "company ip to client"]):
                         violations.append({
                             "clause_type": clause["clause_type"],
@@ -225,6 +304,15 @@ class RiskCalculatorTool(BaseTool):
             clauses = json.loads(clauses_json)
             violations = json.loads(violations_json)
             
+            if not clauses and not violations:
+                # Nothing was extracted: do not report a fabricated baseline score
+                return json.dumps({
+                    "overall_risk_score": 0.0,
+                    "risk_level": "UNKNOWN",
+                    "critical_issues": [],
+                    "recommendations": ["No clauses could be extracted - manual review required"]
+                })
+
             # Calculate base risk from clauses
             risk_score = 30.0  # Base risk
             
@@ -329,12 +417,21 @@ class RedlineGeneratorTool(BaseTool):
                         "priority": "HIGH"
                     })
                 
-                elif "ip" in clause_type.lower() or "intellectual property" in clause_type.lower():
+                elif _is_ip_clause(clause_type):
                     redlines.append({
                         "original_text": original_text,
                         "suggested_text": COMPANY_POLICIES["ip_ownership"]["redline_text"],
                         "justification": "Protects company pre-existing IP and methodologies",
                         "priority": "CRITICAL"
+                    })
+
+                elif suggested_fix:
+                    # Violations from other checks (e.g. CUAD deviations) carry their own fix
+                    redlines.append({
+                        "original_text": original_text,
+                        "suggested_text": suggested_fix,
+                        "justification": issue or "Addresses detected policy deviation",
+                        "priority": violation.get("severity", "MEDIUM") if violation.get("severity") in ("LOW", "MEDIUM", "HIGH", "CRITICAL") else "MEDIUM"
                     })
             
             logger.info(f"Generated {len(redlines)} redline recommendations")

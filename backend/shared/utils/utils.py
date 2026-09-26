@@ -5,13 +5,23 @@ from typing import Optional
 
 
 def convert_neo4j_date(value):
+    """Convert Neo4j temporal values to ISO strings (zero-padded, sortable)."""
     if isinstance(value, dict):
         return {k: convert_neo4j_date(v) for k, v in value.items()}
     elif isinstance(value, (list, tuple)):
         return [convert_neo4j_date(item) for item in value]
     elif isinstance(value, (Date, DateTime)):
-        return f"{value.year}-{value.month}-{value.day}"
+        return value.iso_format()
     return value
+
+
+def to_json_safe(value):
+    """Make Neo4j query results JSON-friendly for API responses.
+
+    FastAPI serialises neo4j.time objects as their private fields
+    (``{'_DateTime__date': ...}``); convert them to ISO strings instead.
+    """
+    return convert_neo4j_date(value)
 
 
 def parse_date_to_iso(date_str: str) -> Optional[str]:

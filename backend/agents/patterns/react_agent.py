@@ -24,11 +24,11 @@ class ReACTStep:
 class ReACTAgent(BasePatternAgent):
     """ReACT Pattern: Reasoning-Action-Observation (SOLID: SRP, OCP, DIP)"""
     
-    def __init__(self, max_iterations: int = 3):
+    def __init__(self, max_iterations: int = 3, llm=None):
         super().__init__("ReACT Pattern Agent")
-        self.max_iterations = max_iterations
+        self.max_iterations = max(1, int(max_iterations))
         self.steps: List[ReACTStep] = []
-        self.clause_tool = ClauseDetectorTool()  # Reuse existing tool (DRY)
+        self.clause_tool = ClauseDetectorTool(llm=llm)  # Reuse existing tool (DRY)
     
     def get_agent_role(self) -> str:
         return "Iterative contract analysis with reasoning-action-observation cycles"
@@ -44,7 +44,11 @@ class ReACTAgent(BasePatternAgent):
             return {'success': False, 'error': 'Missing contract text'}
         
         self.steps = []
-        working_context = {'contract_text': contract_text, 'findings': []}
+        working_context = {
+            'contract_text': contract_text,
+            'findings': [],
+            'original_query': context.get('query') or context.get('original_query', 'key clauses'),
+        }
         
         for iteration in range(self.max_iterations):
             step = await self._execute_react_cycle(working_context, iteration)
@@ -63,7 +67,8 @@ class ReACTAgent(BasePatternAgent):
             'pattern': 'ReACT',
             'steps': [self._step_to_dict(step) for step in self.steps],
             'final_confidence': self.steps[-1].confidence if self.steps else 0.0,
-            'iterations': len(self.steps)
+            'iterations': len(self.steps),
+            'findings': working_context.get('findings', [])
         }
     
     async def _execute_react_cycle(self, context: Dict[str, Any], iteration: int) -> ReACTStep:
@@ -90,7 +95,14 @@ class ReACTAgent(BasePatternAgent):
         clauses = json.loads(clauses_json)
         
         action_desc = f"Clause detection (iteration {iteration})"
-        observation = f"Found {len(clauses)} clauses"
+        # Phrase the observation so _calculate_confidence can react to it
+        # (the old "Found N clauses" never matched, so ReACT never converged).
+        if not clauses:
+            observation = "No matches found. Need broader search terms."
+        elif len(clauses) > 10:
+            observation = f"Found {len(clauses)} matches, many irrelevant. Need refinement."
+        else:
+            observation = f"Found {len(clauses)} relevant matches."
         
         context['findings'] = clauses
         

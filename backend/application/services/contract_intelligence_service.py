@@ -2,6 +2,7 @@ from backend.agents.contract_intelligence_agents import ContractIntelligenceAgen
 from backend.domain.entities import ContractIntelligence, ContractClause, PolicyViolation, RiskAssessment, RedlineRecommendation
 from backend.infrastructure.contract_repository import Neo4jContractRepository
 from backend.llm_manager import LLMManager
+import asyncio
 import json
 import logging
 import time
@@ -17,7 +18,8 @@ class ContractIntelligenceService:
         self.llm_manager = llm_manager
         self.repository = Neo4jContractRepository()
     
-    def analyze_contract_intelligence(self, contract_text: str, model: str = "gemini-2.5-flash", use_planning: bool = True) -> ContractIntelligence:
+    def analyze_contract_intelligence(self, contract_text: str, model: str = "gemini-2.5-flash",
+                                      use_planning: bool = True, contract_id: str = "unknown") -> ContractIntelligence:
         """Perform complete contract intelligence analysis using multi-agent system"""
         
         start_time = time.time()
@@ -32,7 +34,7 @@ class ContractIntelligenceService:
             try:
                 orchestrator = ContractIntelligenceAgentFactory.create_orchestrator(llm)
                 # Run multi-agent analysis with optional planning
-                analysis_result = orchestrator.analyze_contract(contract_text, use_planning)
+                analysis_result = orchestrator.analyze_contract(contract_text, use_planning, contract_id=contract_id)
             except ImportError as ie:
                 logger.error(f"Import error in orchestrator: {ie}")
                 raise Exception(f"Intelligence system not properly configured: {ie}")
@@ -40,6 +42,9 @@ class ContractIntelligenceService:
                 logger.error(f"Orchestrator creation failed: {oe}")
                 raise Exception(f"Failed to initialize intelligence system: {oe}")
             
+            if not analysis_result.get("processing_complete", False):
+                raise Exception(analysis_result.get("error") or "Analysis did not complete")
+
             # Convert to domain entities
             intelligence = self._convert_to_domain_entities(analysis_result)
             intelligence.processing_time = time.time() - start_time
@@ -51,7 +56,7 @@ class ContractIntelligenceService:
             logger.error(f"Contract intelligence analysis failed: {e}")
             import traceback
             logger.error(f"Full traceback: {traceback.format_exc()}")
-            # Return empty result on failure
+            # Explicitly failed result - callers must not treat it as a real analysis
             return ContractIntelligence(
                 clauses=[],
                 violations=[],
@@ -62,7 +67,9 @@ class ContractIntelligenceService:
                     recommendations=["Analysis failed - manual review required"]
                 ),
                 redlines=[],
-                processing_time=time.time() - start_time
+                processing_time=time.time() - start_time,
+                status="failed",
+                error=str(e),
             )
     
     async def analyze_contract_by_id(self, contract_id: str, tenant_id: str = "default-tenant", model: str = "gemini-2.5-flash", use_planning: bool = True) -> Optional[ContractIntelligence]:
@@ -89,11 +96,16 @@ class ContractIntelligenceService:
                 logger.error(f"Contract data keys: {list(contract_data.keys())}")
                 return None
             
-            # Perform analysis with optional planning
-            intelligence = self.analyze_contract_intelligence(contract_text, model, use_planning)
-            
-            # Store intelligence results back to database
-            self._store_intelligence_results(contract_id, tenant_id, intelligence)
+            # The multi-agent run is synchronous and slow: run it on a worker thread
+            # so the event loop keeps serving other requests (e.g. status polling).
+            intelligence = await asyncio.to_thread(
+                self.analyze_contract_intelligence, contract_text, model, use_planning, contract_id
+            )
+
+            if intelligence.status == "failed":
+                self._store_failed_status(contract_id, tenant_id, intelligence.error)
+            else:
+                self._store_intelligence_results(contract_id, tenant_id, intelligence)
             
             return intelligence
             
@@ -102,18 +114,16 @@ class ContractIntelligenceService:
             return None
     
     def _get_llm_for_model(self, model: str):
-        """Get LLM instance for the specified model"""
+        """Raw chat model for analysis (not the tool-calling chat agent).
+
+        Returns None when no provider is configured; extraction then falls
+        back to keyword heuristics instead of failing outright.
+        """
         try:
-            return self.llm_manager.agents[model]._llm if hasattr(self.llm_manager.agents[model], '_llm') else self.llm_manager.agents[model]
-        except KeyError:
-            logger.warning(f"Model {model} not found, using default")
-            # Use first available model as fallback
-            available_models = list(self.llm_manager.agents.keys())
-            if available_models:
-                fallback_model = available_models[0]
-                return self.llm_manager.agents[fallback_model]._llm if hasattr(self.llm_manager.agents[fallback_model], '_llm') else self.llm_manager.agents[fallback_model]
-            else:
-                raise ValueError("No LLM models available")
+            return self.llm_manager.get_chat_model(model)
+        except ValueError as e:
+            logger.warning(f"No chat model available ({e}); using heuristic extraction")
+            return None
     
     def _convert_to_domain_entities(self, analysis_result: Dict[str, Any]) -> ContractIntelligence:
         """Convert analysis results to domain entities"""
@@ -168,6 +178,7 @@ class ContractIntelligenceService:
         )
         
         # Add CUAD fields if present
+        intelligence.validation_result = analysis_result.get("validation_result")
         intelligence.cuad_deviations = analysis_result.get("cuad_deviations", [])
         intelligence.jurisdiction_info = analysis_result.get("jurisdiction_info", {})
         intelligence.precedent_matches = analysis_result.get("precedent_matches", [])
@@ -216,7 +227,9 @@ class ContractIntelligenceService:
                 c.semantic_analysis_enabled = $semantic_analysis_enabled,
                 c.cache_enabled = $cache_enabled,
                 c.performance_optimized = $performance_optimized,
-                c.intelligence_updated = datetime()
+                c.intelligence_updated = datetime(),
+                c.last_analysis_status = 'completed',
+                c.last_analysis_error = null
             RETURN c
             """
             
@@ -234,6 +247,18 @@ class ContractIntelligenceService:
         except Exception as e:
             logger.error(f"Failed to store intelligence results for {contract_id}: {e}")
     
+    def _store_failed_status(self, contract_id: str, tenant_id: str, error: Optional[str]):
+        """Record a failed run without overwriting a previous successful analysis."""
+        try:
+            self.repository.graph.query("""
+            MATCH (c:Contract {file_id: $contract_id, tenant_id: $tenant_id})
+            SET c.last_analysis_status = 'failed',
+                c.last_analysis_error = $error,
+                c.last_analysis_attempt = datetime()
+            """, {"contract_id": contract_id, "tenant_id": tenant_id, "error": (error or "")[:500]})
+        except Exception as e:
+            logger.error(f"Failed to record analysis failure for {contract_id}: {e}")
+
     def _store_performance_metrics(self, contract_id: str, tenant_id: str, intelligence: ContractIntelligence):
         """Store performance metrics in database"""
         try:
@@ -262,7 +287,7 @@ class ContractIntelligenceService:
                 "tenant_id": tenant_id,
                 "duration_ms": intelligence.processing_time * 1000,
                 "success": True,
-                "validation_score": validation_result.confidence_score if validation_result else 0.0,
+                "validation_score": getattr(validation_result, "confidence_score", 0.0) if validation_result else 0.0,
                 "deviation_count": len(intelligence.cuad_deviations),
                 "jurisdiction": intelligence.jurisdiction_info.get("jurisdiction", "unknown")
             })

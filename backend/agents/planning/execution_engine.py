@@ -28,9 +28,9 @@ class ExecutionResult:
 class StepExecutor:
     """Execute individual analysis steps"""
     
-    def __init__(self):
+    def __init__(self, llm=None):
         self.tools = {
-            StepType.EXTRACT_CLAUSES: ClauseDetectorTool(),
+            StepType.EXTRACT_CLAUSES: ClauseDetectorTool(llm=llm),
             StepType.CHECK_POLICIES: PolicyCheckerTool(),
             StepType.ASSESS_RISK: RiskCalculatorTool(),
             StepType.GENERATE_REDLINES: RedlineGeneratorTool()
@@ -305,8 +305,8 @@ class StepExecutor:
 class PlanExecutionEngine:
     """Execute planned analysis workflows with dependency management"""
     
-    def __init__(self):
-        self.step_executor = StepExecutor()
+    def __init__(self, llm=None):
+        self.step_executor = StepExecutor(llm=llm)
         self.execution_context: Dict[str, Any] = {}
     
     async def execute_plan(self, plan: ExecutionPlan, contract_text: str) -> Dict[str, Any]:
@@ -362,12 +362,16 @@ class PlanExecutionEngine:
             return self._format_error_results(str(e))
     
     async def _wait_for_dependencies(self, step: ExecutionStep, step_results: Dict[str, ExecutionResult]):
-        """Wait for step dependencies to complete"""
+        """Check step dependencies.
+
+        Steps run in plan order, so every dependency must already have run.
+        (The old version polled forever when a dependency was missing or
+        listed later in the plan.)
+        """
         for dep_id in step.dependencies:
-            while dep_id not in step_results:
-                await asyncio.sleep(0.1)  # Wait for dependency
-            
-            if not step_results[dep_id].success:
+            if dep_id not in step_results:
+                logger.warning(f"Dependency {dep_id} for step {step.step_id} has not run; continuing without it")
+            elif not step_results[dep_id].success:
                 logger.warning(f"Dependency {dep_id} failed for step {step.step_id}")
     
     def _update_context_with_result(self, step: ExecutionStep, result: ExecutionResult):
@@ -384,9 +388,15 @@ class PlanExecutionEngine:
             self.execution_context["validation_results"] = result.output_data
         elif step.step_type == StepType.CUAD_MITIGATION:
             cuad_data = result.output_data
-            self.execution_context["cuad_deviations"] = cuad_data.get("cuad_deviations", [])
+            deviations = cuad_data.get("cuad_deviations", [])
+            self.execution_context["cuad_deviations"] = deviations
             self.execution_context["jurisdiction_info"] = cuad_data.get("jurisdiction_info", {})
             self.execution_context["precedent_matches"] = cuad_data.get("precedent_matches", [])
+            # Same behaviour as the LangGraph path: deviations count as violations
+            # (so they get redlines), and learned-pattern annotations replace clauses.
+            self.execution_context["policy_violations"] = self.execution_context.get("policy_violations", []) + deviations
+            if cuad_data.get("enhanced_clauses"):
+                self.execution_context["extracted_clauses"] = cuad_data["enhanced_clauses"]
     
     def _format_final_results(self) -> Dict[str, Any]:
         """Format results in the expected contract intelligence format"""

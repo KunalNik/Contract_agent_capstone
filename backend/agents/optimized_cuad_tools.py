@@ -144,7 +144,8 @@ class OptimizedPrecedentMatcherTool(EnhancedPrecedentMatcherTool):
                     "risk_patterns": self._identify_risk_patterns(fallback_precedents),
                     "recommendations": self._generate_recommendations(fallback_precedents),
                     "similar_contracts": [],
-                    "trend_analysis": {"note": "Limited historical data available"}
+                    "trend_analysis": {"note": "Limited historical data available"},
+                    "data_source": "illustrative_baseline"
                 }
         
         return None

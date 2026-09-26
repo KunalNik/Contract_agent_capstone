@@ -88,6 +88,12 @@ class ContractIntelligence:
     cuad_deviations: List[Dict[str, Any]] = None
     jurisdiction_info: Dict[str, Any] = None
     precedent_matches: List[Dict[str, Any]] = None
+
+    # Outcome of the run: "completed" or "failed" (failed runs must never be
+    # stored or shown as a real zero-risk result)
+    status: str = "completed"
+    error: Optional[str] = None
+    validation_result: Any = None
     
     def __post_init__(self):
         if self.cuad_deviations is None:

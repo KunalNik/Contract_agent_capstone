@@ -302,8 +302,10 @@ class EnhancedPrecedentMatcherTool(PrecedentMatcherTool):
         # Use object.__setattr__ to bypass Pydantic validation
         object.__setattr__(self, 'repository', Neo4jContractRepository())
     
-    def _run(self, clauses_json: str, tenant_id: str = "demo_tenant_1") -> str:
+    def _run(self, clauses_json: str, tenant_id: Optional[str] = None) -> str:
         """Enhanced precedent matching with real database - Enforces multi-tenancy"""
+        from backend.shared.utils.request_context import current_tenant
+        tenant_id = tenant_id or current_tenant()
         try:
             clauses = json.loads(clauses_json)
             matches = []
@@ -334,7 +336,10 @@ class EnhancedPrecedentMatcherTool(PrecedentMatcherTool):
                             "risk_patterns": self._identify_risk_patterns(fallback_precedents),
                             "recommendations": self._generate_recommendations(fallback_precedents),
                             "similar_contracts": [],
-                            "trend_analysis": {"note": "Limited historical data available"}
+                            "trend_analysis": {"note": "Limited historical data available"},
+                            # Clearly mark illustrative baseline data so it is not
+                            # presented to users as this organisation's history
+                            "data_source": "illustrative_baseline"
                         })
             
             return json.dumps(matches)
@@ -343,15 +348,19 @@ class EnhancedPrecedentMatcherTool(PrecedentMatcherTool):
             logger.error(f"Enhanced precedent matching failed: {e}")
             return json.dumps([])
     
-    def _find_real_precedents(self, clause: Dict[str, Any], tenant_id: str) -> List[Dict[str, Any]]:
+    def _find_real_precedents(self, clause: Dict[str, Any], tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Find real precedents from contract database with tenant-level isolation"""
+        from backend.shared.utils.request_context import current_tenant
+        tenant_id = tenant_id or current_tenant()
         try:
             clause_type = clause.get("clause_type", "").lower()
             clause_content = clause.get("content", "")
             
-            # Query similar clauses from Neo4j - Multi-tenant enabled
+            # Query similar clauses from Neo4j - Multi-tenant enabled.
+            # Clauses hang off the contract directly (CONTAINS_CLAUSE) or via a
+            # section (HAS_SECTION -> CONTAINS_CLAUSE); the old [:CONTAINS] never matched.
             query = """
-            MATCH (c:Contract {tenant_id: $tenant_id})-[:CONTAINS]->(cl:Clause)
+            MATCH (c:Contract {tenant_id: $tenant_id})-[:HAS_SECTION|CONTAINS_CLAUSE*1..2]->(cl:Clause)
             WHERE toLower(cl.clause_type) CONTAINS $clause_type
             AND c.intelligence_status = 'completed'
             RETURN cl.clause_type as type,
@@ -377,7 +386,7 @@ class EnhancedPrecedentMatcherTool(PrecedentMatcherTool):
                         "clause_type": result.get("type"),
                         "content": result.get("content"),
                         "risk_level": result.get("risk_level", "UNKNOWN"),
-                        "contract_risk": result.get("contract_risk", 0),
+                        "contract_risk": result.get("contract_risk") or 0,
                         "contract_id": result.get("contract_id"),
                         "contract_type": result.get("contract_type"),
                         "similarity_score": similarity,
