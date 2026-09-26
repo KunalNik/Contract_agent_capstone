@@ -32,6 +32,7 @@ export const AgentWorkflowTracker: React.FC<AgentWorkflowTrackerProps> = ({
   workflowStatus,
   isVisible
 }) => {
+  if (!isVisible) return null;
   if (!workflowStatus || workflowStatus.agent_executions?.length === 0) return null;
 
   const getStatusIcon = (status: string) => {

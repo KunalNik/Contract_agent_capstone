@@ -3,7 +3,10 @@ import { Card, CardContent, CardHeader, CardTitle } from '../../shared/ui/card';
 import { Badge } from '../../shared/ui/badge';
 import { ArrowRight } from 'lucide-react';
 
-const workflows = {
+type WorkflowStep = { agent: string; description: string; tech: string; isNew?: boolean; isEnhanced?: boolean };
+type Workflow = { title: string; description: string; steps: WorkflowStep[] };
+
+const workflows: Record<string, Workflow> = {
   storage: {
     title: 'Document Upload & Dataset Storage',
     description: 'Complete flow for storing uploaded documents in searchable dataset',

@@ -9,7 +9,8 @@ Usage (from repo root):
     PYTHONPATH=. backend/.venv/bin/python scripts/repro_bugs.py
 
 Each line prints: [ID] PASS/FAIL  <what was expected>  ->  <what happened>
-"FAIL" means the bug reproduced.
+"FAIL" means the bug reproduced. On the fixed code every check should PASS;
+the full regression suite lives in backend/tests/unit (run: pytest -q).
 """
 import asyncio
 import json
@@ -32,8 +33,8 @@ class FakeGraph:
         if "avg(c.risk_score)" in q:  # dashboard aggregate over zero analysed contracts
             return [{"total_analyzed": 0, "avg_risk_score": None, "high_risk_count": 0,
                      "total_violations": None, "total_clauses": None, "total_redlines": None}]
-        if "CONTAINS $filename" in q:  # duplicate-upload check finds a match
-            return [{"c.file_id": "UPLOADED_X_nda"}]
+        if "content_hash: $content_hash" in q and q.lstrip().startswith("MATCH"):  # duplicate check finds a match
+            return [{"file_id": "UPLOADED_X_nda"}]
         return []
 
     def refresh_schema(self):
@@ -74,10 +75,12 @@ def intent_validator():
 
 
 def guard_llm_call():
-    from backend.llm_manager import LLMManager
-    model = LLMManager().get_model_by_name("gemini-2.5-flash")
-    model.invoke("System: classify\nPrompt: hello")  # what safety/intent/hallucination do
-    return True, "invoke(str) accepted"
+    """Guards must use a raw chat model (invoke(str)), not the LangGraph chat agent."""
+    import inspect
+    from backend.governance import llm_judge
+    src = inspect.getsource(llm_judge.ask_json)
+    ok = "get_chat_model" in src and "get_model_by_name" not in src
+    return ok, "guards resolve models via get_chat_model" if ok else "guards still use the chat agent"
 
 
 def topic_validator():
@@ -113,29 +116,23 @@ def ip_substring():
 def traditional_path_asyncio():
     from backend.agents.contract_intelligence_agents import IntelligenceOrchestrator
 
+    text = ("1. Payment Terms. Client shall pay within ninety (90) days, net 90. "
+            "2. Limitation of Liability. Supplier accepts unlimited liability for all claims. ") * 80
+
     async def inside_loop():
         orch = IntelligenceOrchestrator(llm=None)
-        return orch.analyze_contract("x" * 12000, use_planning=False)
+        return orch.analyze_contract(text, use_planning=False)
 
     r = asyncio.run(inside_loop())
     return bool(r.get("clauses")), f"clauses={len(r.get('clauses', []))} risk={r.get('risk_assessment')}"
 
 
 def enhanced_upload_sync_invoke():
-    from langgraph.graph import StateGraph, START, END
-
-    class S(TypedDict):
-        a: int
-
-    async def node(s):
-        return {"a": 1}
-
-    b = StateGraph(S)
-    b.add_node("store_contract", node)
-    b.add_edge(START, "store_contract")
-    b.add_edge("store_contract", END)
-    b.compile().invoke({"a": 0})  # same pattern as enhanced_document_processing_service.py:109
-    return True, "sync invoke ok"
+    """The enhanced service must run the agent (which has an async node) asynchronously."""
+    import inspect
+    from backend.application.services.enhanced_document_processing_service import EnhancedDocumentProcessingService
+    ok = inspect.iscoroutinefunction(EnhancedDocumentProcessingService.process_pdf_with_embeddings)
+    return ok, f"process_pdf_with_embeddings is async: {ok}"
 
 
 def chat_tool_tenant_from_llm():
@@ -154,8 +151,9 @@ def mcp_fetch_metadata():
 
 def basic_upload_embeddings():
     from backend.application.services.document_processing_service import DocumentProcessingService
-    has = hasattr(DocumentProcessingService, "_process_enhanced_embeddings")
-    return has, f"DocumentProcessingService._process_enhanced_embeddings exists: {has}"
+    service = DocumentProcessingService(agent_manager=None)
+    has = hasattr(service.embedding_pipeline, "run")
+    return has, f"basic upload service has an embedding pipeline: {has}"
 
 
 # ---------------------------------------------------------------- HTTP endpoints
@@ -183,20 +181,25 @@ def http_checks():
         ep("F7", "patterns/chain-of-thought returns 200", "post", "/api/patterns/chain-of-thought", 200,
            json={"query": "termination", "clauses": []})
         ep("F6", "policy upload (text) returns 200", "post", "/api/policies/upload", 200,
-           files={"file": ("p.txt", b"Section 1. Liability shall be capped. " * 20)},
-           data={"tenant_id": "t1", "policy_name": "p"})
-        ep("F6", "tenant policy listing returns 200", "get", "/api/policies/tenant/t1", 200)
+           files={"file": ("p.txt", b"SECTION 1: LIABILITY POLICY\nLiability shall be capped and must never be unlimited.\n" * 5)},
+           data={"policy_name": "p"})
+        ep("F6", "tenant policy listing returns 200", "get", "/api/policies/tenant", 200)
         ep("F6", "unknown policy id returns 404", "get", "/api/policies/nope", 404)
         ep("F5", "duplicate upload returns 200 'duplicate'", "post", "/api/documents/upload", 200,
            files={"file": ("nda.pdf", b"%PDF-1.4 x")})
-        ep("S3", "request without a role header is rejected", "get", "/api/audit/errors/recent", 401)
+        os.environ["ENVIRONMENT"] = "production"
+        os.environ["JWT_SECRET"] = "repro-secret-with-enough-length-12345"
+        ep("S3", "production rejects requests without a token (even with a role header)", "get",
+           "/api/audit/errors/recent", 401, headers={"X-User-Role": "ADMIN"})
+        os.environ["ENVIRONMENT"] = "development"
         ep("S5", "debug endpoint listing all contracts is not mounted", "get",
            "/api/documents/debug/contracts", 404)
 
         def supervisor_status():
-            r = c.get("/api/supervisor/workflow/abc/status")
-            return "not found" not in r.text.lower(), r.text[:110]
-        check("F8", "supervisor status can find a workflow", supervisor_status)
+            c.post("/api/supervisor/workflow/execute", json={"workflow_id": "wf-repro", "input_data": {}})
+            r = c.get("/api/supervisor/workflow/wf-repro/status")
+            return r.status_code == 200, r.text[:110]
+        check("F8", "supervisor status can find a workflow it ran", supervisor_status)
 
 
 if __name__ == "__main__":

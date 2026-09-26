@@ -1,15 +1,41 @@
 services:
+  neo4j:
+    # 5.x is required for vector.similarity.cosine (used by search and RAG)
+    image: neo4j:5.26
+    environment:
+      - NEO4J_AUTH=${NEO4J_USERNAME-neo4j}/${NEO4J_PASSWORD-changeme-local-only}
+    ports:
+      - 7474:7474
+      - 7687:7687
+    volumes:
+      - neo4j-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
+      interval: 10s
+      retries: 12
+    networks:
+      - net
   backend:
     build:
       context: ./backend
     environment:
-      - NEO4J_URI=${NEO4J_URI-neo4j+s://demo.neo4jlabs.com:7687}
-      - NEO4J_PASSWORD=${NEO4J_PASSWORD-legalcontracts}
-      - NEO4J_USERNAME=${NEO4J_USERNAME-legalcontracts}
-      - NEO4J_DATABASE=${NEO4J_DATABASE-legalcontracts}
+      - NEO4J_URI=${NEO4J_URI-bolt://neo4j:7687}
+      - NEO4J_USERNAME=${NEO4J_USERNAME-neo4j}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD-changeme-local-only}
+      - NEO4J_DATABASE=${NEO4J_DATABASE-neo4j}
       - OPENAI_API_KEY=${OPENAI_API_KEY-}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY-}
+      - ENVIRONMENT=${ENVIRONMENT-development}
+      - AUTH_MODE=${AUTH_MODE-}
+      - JWT_SECRET=${JWT_SECRET-}
+      - CORS_ORIGINS=${CORS_ORIGINS-http://localhost:3000,http://localhost:5173}
       - PHOENIX_COLLECTOR_ENDPOINT=http://phoenix:6006/v1/traces
+      - CACHE_ENABLED=${CACHE_ENABLED-false}
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      neo4j:
+        condition: service_healthy
     networks:
       - net
     x-develop:
@@ -38,6 +64,15 @@ services:
       - 4317:4317
     networks:
       - net
+  redis:
+    # Optional: only used when CACHE_ENABLED=true (docker compose --profile cache up)
+    image: redis:7-alpine
+    profiles: ["cache"]
+    networks:
+      - net
+
+volumes:
+  neo4j-data:
 
 networks:
   net:

@@ -13,6 +13,7 @@ interface ContractClause {
 
 interface ClausesDetailProps {
   clauses: ContractClause[];
+  contractId?: string;
 }
 
 export const ClausesDetail: React.FC<ClausesDetailProps> = ({ clauses }) => {
@@ -82,7 +83,7 @@ export const ClausesDetail: React.FC<ClausesDetailProps> = ({ clauses }) => {
       }
     };
 
-    return alignments[clauseType] || {
+    return ((alignments as Record<string, (typeof alignments)[keyof typeof alignments]>)[clauseType]) || {
       compliant: riskLevel.toUpperCase() === 'LOW',
       policy: 'General Contract Policy 1.0',
       requirement: 'Standard commercial terms and conditions',
@@ -90,7 +91,7 @@ export const ClausesDetail: React.FC<ClausesDetailProps> = ({ clauses }) => {
     };
   };
 
-  const getRiskImpact = (riskLevel: string, clauseType: string) => {
+  const getRiskImpact = (riskLevel: string, _clauseType: string) => {
     const impacts = {
       'CRITICAL': {
         business: 'Severe business disruption and financial loss likely',
@@ -122,10 +123,10 @@ export const ClausesDetail: React.FC<ClausesDetailProps> = ({ clauses }) => {
       }
     };
 
-    return impacts[riskLevel.toUpperCase()] || impacts['MEDIUM'];
+    return ((impacts as Record<string, (typeof impacts)[keyof typeof impacts]>)[riskLevel.toUpperCase()]) || impacts['MEDIUM'];
   };
 
-  const getRecommendedActions = (riskLevel: string, clauseType: string) => {
+  const getRecommendedActions = (riskLevel: string, _clauseType: string) => {
     const actions = {
       'CRITICAL': [
         'Engage legal counsel immediately for clause revision',
@@ -153,7 +154,7 @@ export const ClausesDetail: React.FC<ClausesDetailProps> = ({ clauses }) => {
       ]
     };
 
-    return actions[riskLevel.toUpperCase()] || actions['MEDIUM'];
+    return ((actions as Record<string, (typeof actions)[keyof typeof actions]>)[riskLevel.toUpperCase()]) || actions['MEDIUM'];
   };
 
   return (
@@ -267,7 +268,7 @@ export const ClausesDetail: React.FC<ClausesDetailProps> = ({ clauses }) => {
                   Recommended Actions
                 </h4>
                 <ul className="space-y-2">
-                  {recommendedActions.map((action, actionIndex) => (
+                  {recommendedActions.map((action: string, actionIndex: number) => (
                     <li key={actionIndex} className="flex items-start gap-2 text-sm">
                       <div className="w-1.5 h-1.5 bg-blue-500 rounded-full mt-2 flex-shrink-0" />
                       <span className="text-blue-800">{action}</span>

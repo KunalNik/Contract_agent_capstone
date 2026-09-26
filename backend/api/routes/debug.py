@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends
-from backend.governance.rbac import Permission, requires_permission
+from backend.governance.rbac import Permission, requires_permission, get_current_tenant
 from backend.infrastructure.contract_repository import Neo4jContractRepository
 import logging
 import os
@@ -14,13 +14,13 @@ def create_debug_router() -> APIRouter:
         router = APIRouter(prefix="/debug", tags=["debug"])
         
         @router.get("/contracts", dependencies=[Depends(requires_permission(Permission.VIEW_AUDIT))])
-        async def list_all_contracts():
+        async def list_all_contracts(tenant_id: str = Depends(get_current_tenant)):
             """Debug endpoint to see all contracts in database"""
             try:
                 repo = Neo4jContractRepository()
                 
                 query = """
-                MATCH (c:Contract)
+                MATCH (c:Contract {tenant_id: $tenant_id})
                 RETURN c.file_id as contract_id, 
                        c.contract_type as contract_type,
                        c.summary as summary,
@@ -28,7 +28,7 @@ def create_debug_router() -> APIRouter:
                 ORDER BY c.upload_date DESC
                 """
                 
-                result = repo.graph.query(query)
+                result = repo.graph.query(query, {"tenant_id": tenant_id})
                 
                 contracts = []
                 for row in result:
@@ -49,18 +49,18 @@ def create_debug_router() -> APIRouter:
                 return {"error": str(e)}
 
         @router.get("/contract-types", dependencies=[Depends(requires_permission(Permission.VIEW_REPORTS))])
-        async def get_contract_type_counts():
+        async def get_contract_type_counts(tenant_id: str = Depends(get_current_tenant)):
             """Debug endpoint to see contract type distribution"""
             try:
                 repo = Neo4jContractRepository()
                 
                 query = """
-                MATCH (c:Contract)
+                MATCH (c:Contract {tenant_id: $tenant_id})
                 RETURN c.contract_type as contract_type, count(*) as count
                 ORDER BY count DESC
                 """
                 
-                result = repo.graph.query(query)
+                result = repo.graph.query(query, {"tenant_id": tenant_id})
                 
                 return {
                     "contract_types": [{"type": row["contract_type"], "count": row["count"]} for row in result]

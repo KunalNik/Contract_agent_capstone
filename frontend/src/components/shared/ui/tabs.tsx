@@ -24,7 +24,7 @@ const Tabs: React.FC<TabsProps> = ({ defaultValue, value, onValueChange, classNa
     <div className={className} data-value={currentValue}>
       {React.Children.map(children, child => 
         React.isValidElement(child) 
-          ? React.cloneElement(child, { currentValue, onValueChange: handleValueChange })
+          ? React.cloneElement(child as React.ReactElement<{ currentValue?: string; onValueChange?: (v: string) => void }>, { currentValue, onValueChange: handleValueChange })
           : child
       )}
     </div>
@@ -42,7 +42,7 @@ const TabsList: React.FC<TabsListProps> = ({ className, children, currentValue, 
   <div className={cn("inline-flex h-10 items-center justify-center rounded-md bg-slate-100 p-1 text-slate-500", className)}>
     {React.Children.map(children, child => 
       React.isValidElement(child) 
-        ? React.cloneElement(child, { currentValue, onValueChange })
+        ? React.cloneElement(child as React.ReactElement<{ currentValue?: string; onValueChange?: (v: string) => void }>, { currentValue, onValueChange })
         : child
     )}
   </div>

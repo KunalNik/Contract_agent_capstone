@@ -11,7 +11,7 @@ WORKDIR /app
 COPY uv.lock pyproject.toml ./
 
 # Install dependencies (this layer will be cached)
-RUN uv sync
+RUN uv sync --frozen --no-dev
 
 # Copy application code
 COPY . ./backend/
@@ -21,5 +21,6 @@ ENV PYTHONPATH=/app
 
 EXPOSE 8000
 
-# Run the application from the backend directory
-CMD ["uv", "run", "fastapi", "dev", "backend/main.py", "--host", "0.0.0.0", "--port", "8000"]
+# Production server (no auto-reload). For local development with reload use:
+#   uv run fastapi dev backend/main.py --host 0.0.0.0 --port 8000
+CMD ["uv", "run", "fastapi", "run", "backend/main.py", "--host", "0.0.0.0", "--port", "8000"]

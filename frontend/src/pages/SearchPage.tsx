@@ -1,10 +1,11 @@
 import React, { useState, useCallback } from 'react';
 import { EnhancedSearchInterface, EnhancedSearchParams } from '../components/features/search/EnhancedSearchInterface';
 import { EnhancedSearchResults } from '../components/features/search/EnhancedSearchResults';
-import { enhancedSearchApi, EnhancedSearchResponse } from '../services/enhancedSearchApi';
+import { enhancedSearchApi } from '../services/enhancedSearchApi';
 
 interface SearchState {
-  results: EnhancedSearchResponse | null;
+  // The results list from the API response (one entry per search level)
+  results: unknown[] | null;
   isLoading: boolean;
   error: string | null;
 }
@@ -27,7 +28,7 @@ export const SearchPage: React.FC = () => {
       // removed log
 
       // Handle different response structures
-      let results;
+      let results: unknown[];
       if (Array.isArray(apiResponse)) {
         results = apiResponse;
       } else if (apiResponse && typeof apiResponse === 'object') {

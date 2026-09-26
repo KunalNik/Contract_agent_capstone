@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '../../shared/ui/card';
 import { Badge } from '../../shared/ui/badge';
 import { Button } from '../../shared/ui/button';
-import { AlertTriangle, CheckCircle, XCircle, Shield, TrendingDown, Clock, Download, Search, Filter, Calendar } from 'lucide-react';
+import { AlertTriangle, CheckCircle, XCircle, Shield, TrendingDown, Clock, Download, Search, Calendar } from 'lucide-react';
 
 interface PolicyViolation {
   clause_type: string;
@@ -91,14 +91,14 @@ export const ViolationsDetail: React.FC<ViolationsDetailProps> = ({ violations, 
       }
     };
     
-    return policies[clauseType] || {
+    return ((policies as Record<string, (typeof policies)[keyof typeof policies]>)[clauseType]) || {
       policy: 'General Contract Policy 1.0',
       section: 'Section 1.1 - Standard Requirements',
       requirement: 'Must comply with company contracting standards'
     };
   };
 
-  const getBusinessImpact = (severity: string, clauseType: string) => {
+  const getBusinessImpact = (severity: string, _clauseType: string) => {
     const impacts = {
       'CRITICAL': {
         financial: 'Potential financial loss exceeding $100K',
@@ -126,7 +126,7 @@ export const ViolationsDetail: React.FC<ViolationsDetailProps> = ({ violations, 
       }
     };
 
-    return impacts[severity.toUpperCase()] || impacts['MEDIUM'];
+    return ((impacts as Record<string, (typeof impacts)[keyof typeof impacts]>)[severity.toUpperCase()]) || impacts['MEDIUM'];
   };
 
   const getComplianceActions = (severity: string) => {
@@ -157,7 +157,7 @@ export const ViolationsDetail: React.FC<ViolationsDetailProps> = ({ violations, 
       ]
     };
 
-    return actions[severity.toUpperCase()] || actions['MEDIUM'];
+    return ((actions as Record<string, (typeof actions)[keyof typeof actions]>)[severity.toUpperCase()]) || actions['MEDIUM'];
   };
 
   const exportReport = () => {
@@ -405,7 +405,7 @@ export const ViolationsDetail: React.FC<ViolationsDetailProps> = ({ violations, 
               <div className="bg-slate-50 p-4 rounded border border-slate-200">
                 <h4 className="font-semibold text-slate-700 mb-3">Compliance Actions Required</h4>
                 <ul className="space-y-2">
-                  {actions.map((action, actionIndex) => (
+                  {actions.map((action: string, actionIndex: number) => (
                     <li key={actionIndex} className="flex items-start gap-2 text-sm">
                       <div className="w-1.5 h-1.5 bg-slate-400 rounded-full mt-2 flex-shrink-0" />
                       <span className="text-slate-700">{action}</span>

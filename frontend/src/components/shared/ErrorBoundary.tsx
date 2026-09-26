@@ -1,4 +1,4 @@
-import React, { Component, ErrorInfo, ReactNode } from 'react';
+import { Component, ErrorInfo, ReactNode } from 'react';
 
 interface Props {
   children: ReactNode;
@@ -20,8 +20,8 @@ export class ErrorBoundary extends Component<Props, State> {
     return { hasError: true, error };
   }
 
-  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    // removed log
+  componentDidCatch(_error: Error, _errorInfo: ErrorInfo) {
+    // Errors are shown via the fallback UI; no client-side logging by policy
   }
 
   render() {

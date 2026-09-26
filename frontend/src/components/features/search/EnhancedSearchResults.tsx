@@ -1,5 +1,5 @@
 import React from 'react';
-import { FileText, Hash, Users, Link } from 'lucide-react';
+import { FileText, Hash, Users } from 'lucide-react';
 
 interface SearchResult {
   documents?: DocumentResult[];
@@ -82,9 +82,6 @@ export const EnhancedSearchResults: React.FC<EnhancedSearchResultsProps> = ({
     return (
       <div className={`text-center py-8 text-slate-500 ${className}`}>
         No results found. Try adjusting your search criteria.
-        <div className="mt-2 text-xs">
-          Debug: Received {typeof results} - {JSON.stringify(results)}
-        </div>
       </div>
     );
   }

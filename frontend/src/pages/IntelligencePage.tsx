@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { DocumentUpload } from '../components/features/contracts/DocumentUpload';
 import { ContractIntelligence } from '../components/features/intelligence/ContractIntelligence';
 import { AgentWorkflowTracker } from '../components/features/agents/AgentWorkflowTracker';
@@ -18,13 +18,26 @@ export const IntelligencePage: React.FC = () => {
   const [selectedModel, setSelectedModel] = useState('gemini-2.5-flash');
   const [uploadResult, setUploadResult] = useState<UploadResult | null>(null);
   const [workflowStatus, setWorkflowStatus] = useState<any>(null);
-  const [showWorkflow, setShowWorkflow] = useState(false);
+  // Only models the backend actually initialised (depends on configured API keys)
+  const [availableModels, setAvailableModels] = useState<string[]>(['gemini-2.5-flash']);
   const [isUploading, setIsUploading] = useState(false);
-  const { contracts, addContract, updateContract, selectedContractId, setSelectedContract } = useContractHistory();
+  const { contracts, addContract, updateContract, setSelectedContract } = useContractHistory();
+
+  useEffect(() => {
+    fetch('/api/documents/status')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        const models: string[] = data?.available_models ?? [];
+        if (models.length) {
+          setAvailableModels(models);
+          setSelectedModel((current) => (models.includes(current) ? current : models[0]));
+        }
+      })
+      .catch(() => { /* keep defaults */ });
+  }, []);
 
   const handleUploadComplete = (result: UploadResult) => {
     setUploadResult(result);
-    setShowWorkflow(true);
     setIsUploading(false);
     
     // Add to contract history
@@ -77,10 +90,9 @@ export const IntelligencePage: React.FC = () => {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="gemini-2.5-flash">Gemini 2.0 Flash</SelectItem>
-                <SelectItem value="gemini-1.5-pro">Gemini 1.5 Pro</SelectItem>
-                <SelectItem value="gpt-4o">GPT-4o</SelectItem>
-                <SelectItem value="sonnet-3.5">Claude Sonnet 3.5</SelectItem>
+                {availableModels.map((m) => (
+                  <SelectItem key={m} value={m}>{m}</SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>

@@ -82,10 +82,13 @@ class CurrentUser:
 
 
 def auth_mode() -> str:
-    mode = os.getenv("AUTH_MODE")
-    if mode:
-        return mode.lower()
-    return "jwt" if os.getenv("ENVIRONMENT", "development") == "production" else "header"
+    production = os.getenv("ENVIRONMENT", "development") == "production"
+    mode = (os.getenv("AUTH_MODE") or "").lower()
+    if production and mode not in ("", "jwt"):
+        # Header auth lets any client claim ADMIN; never allow it in production
+        logger.error(f"AUTH_MODE={mode} is not allowed in production; using jwt")
+        return "jwt"
+    return mode or ("jwt" if production else "header")
 
 
 def _parse_role(value: str) -> UserRole:

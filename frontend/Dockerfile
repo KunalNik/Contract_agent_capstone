@@ -1,22 +1,23 @@
-FROM node:23-alpine as build
+FROM node:22-alpine AS build
 
-# Set working directory
 WORKDIR /app
 
-# Copy package.json and package-lock.json
+# Install exactly what package-lock.json pins
 COPY package*.json ./
+RUN npm ci
 
-# Install dependencies
-RUN npm install
-
-# Copy all files
 COPY . .
 
-# Build stage
+# Production: type-check + bundle, served by nginx (docker build --target production)
+FROM build AS bundle
+RUN npm run build
+
+FROM nginx:1.27-alpine AS production
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=bundle /app/dist /usr/share/nginx/html
+EXPOSE 80
+
+# Development (default target used by docker-compose): Vite dev server with proxy
 FROM build AS development
-
-# Expose port that Vite uses by default
 EXPOSE 5173
-
-# Command to run development server
 CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]

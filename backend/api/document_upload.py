@@ -128,7 +128,14 @@ async def upload_pdf(
             temp_file.write(file_content)
 
         from backend.infrastructure.text_extractors import TextExtractionService
-        full_text = TextExtractionService().extract_with_fallback(temp_path)
+        try:
+            full_text = TextExtractionService().extract_with_fallback(temp_path)
+        except Exception as extract_error:
+            # Corrupt, encrypted or scanned (image-only) PDFs are a client problem, not a 500
+            raise HTTPException(
+                status_code=422,
+                detail=f"Could not read text from this PDF (corrupt, encrypted or scanned without OCR): {extract_error}",
+            )
         content_validation = validator.validate({"full_text": full_text})
         if content_validation["has_errors"]:
             audit_logger.log_event(

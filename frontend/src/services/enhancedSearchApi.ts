@@ -1,11 +1,13 @@
-import { EnhancedSearchParams } from '../components/search/EnhancedSearchInterface';
+import { EnhancedSearchParams } from '../components/features/search/EnhancedSearchInterface';
 
-const API_BASE_URL = 'http://localhost:8000';
+// Same-origin requests go through the Vite proxy (dev) or the reverse proxy
+// (prod); a hardcoded http://localhost:8000 broke any non-local deployment.
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
 
 export interface EnhancedSearchResponse {
   success: boolean;
   search_level: string;
-  results: any[];
+  results: unknown[];
 }
 
 export interface SectionType {
@@ -71,7 +73,7 @@ class EnhancedSearchApi {
     formData.append('file', file);
 
     const response = await fetch(
-      `${API_BASE_URL}/documents/enhanced/upload?model=${model}&enable_embeddings=${enableEmbeddings}`,
+      `${API_BASE_URL}/api/documents/enhanced/upload?model=${encodeURIComponent(model)}&enable_embeddings=${enableEmbeddings}`,
       {
         method: 'POST',
         body: formData
@@ -86,7 +88,7 @@ class EnhancedSearchApi {
   }
 
   async getEmbeddingStatus(contractId: string): Promise<any> {
-    const response = await fetch(`${API_BASE_URL}/documents/enhanced/embedding-status/${contractId}`);
+    const response = await fetch(`${API_BASE_URL}/api/documents/enhanced/embedding-status/${encodeURIComponent(contractId)}`);
     
     if (!response.ok) {
       throw new Error(`Failed to get embedding status: ${response.statusText}`);

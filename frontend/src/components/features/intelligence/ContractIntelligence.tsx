@@ -43,7 +43,7 @@ interface ContractIntelligenceProps {
   contractId: string;
   model?: string;
   onWorkflowUpdate?: (status: any) => void;
-  onAnalysisComplete?: (contractId: string, riskScore?: number, riskLevel?: string) => void;
+  onAnalysisComplete?: (contractId: string, riskScore?: number, riskLevel?: string, results?: IntelligenceResults) => void;
 }
 
 export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({ 
@@ -77,7 +77,7 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
     }, 500);
     
     try {
-      const response = await fetch(`/api/intelligence/contracts/${contractId}/analyze?model=${model}`, {
+      const response = await fetch(`/api/intelligence/contracts/${encodeURIComponent(contractId)}/analyze?model=${encodeURIComponent(model)}`, {
         method: 'POST',
       });
       
@@ -86,7 +86,9 @@ export const ContractIntelligence: React.FC<ContractIntelligenceProps> = ({
           throw new Error('Contract not found. Please verify the contract ID.');
         }
         if (response.status >= 500) {
-          throw new Error('Server error. Please try again later.');
+          // Show the server's reason (e.g. "Analysis failed: LLM quota exceeded")
+          const detail = await response.json().then((b) => b?.detail).catch(() => null);
+          throw new Error(detail || 'Server error. Please try again later.');
         }
         throw new Error(`Analysis failed: ${response.statusText}`);
       }
