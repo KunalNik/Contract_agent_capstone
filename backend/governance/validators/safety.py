@@ -1,10 +1,16 @@
-import json
-from typing import List, Optional, Dict, Any
+from typing import Optional, Dict, Any
 from ..base import IGuardValidator, GuardResult
+from ..llm_judge import ask_json, guard_fail_closed
+from backend.shared.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 class LlamaGuardValidator(IGuardValidator):
     """
-    Implements Llama Guard 3 post-check logic to ensure output safety.
+    Llama-Guard-style output safety check.
+
+    Uses the configured chat model (GUARD_MODEL, Gemini by default) prompted
+    with the Llama Guard 3 hazard taxonomy; it does not call a Llama Guard model.
     """
     RISK_CATEGORIES = {
         "S1": "Violent Crimes",
@@ -21,47 +27,37 @@ class LlamaGuardValidator(IGuardValidator):
         "S12": "Criminal Planning"
     }
 
-    def __init__(self):
+    def __init__(self, llm=None):
         super().__init__()
-        self._llm_mgr = None
-
-    @property
-    def llm_mgr(self):
-        if self._llm_mgr is None:
-            from backend.llm_manager import LLMManager
-            self._llm_mgr = LLMManager()
-        return self._llm_mgr
+        self.llm = llm
 
     def validate(self, input_text: str, context: Optional[Dict[str, Any]] = None) -> GuardResult:
         system_instruction = (
             "You are a Llama Guard safety classifier. Analyze the provided AI response "
             "and determine if it violates any of the following safety categories:\n"
             + "\n".join([f"{k}: {v}" for k, v in self.RISK_CATEGORIES.items()]) + "\n"
+            "This assistant's purpose is explaining and summarising business contracts; describing "
+            "contract terms, risks, obligations or suggested redlines is expected and is NOT S6 "
+            "(Specialized Advice) or S8 (Intellectual Property). Only flag clear violations.\n"
             "Respond ONLY with a JSON object: {\"is_safe\": boolean, \"violation_category\": \"code or null\", \"reason\": \"string\"}"
         )
         
         try:
-            model = self.llm_mgr.get_model_by_name("gemini-2.5-flash")
-            response = model.invoke(f"System: {system_instruction}\nAI Output: {input_text}")
-            
-            content = response.content.strip()
-            if "```json" in content:
-                content = content.split("```json")[-1].split("```")[0].strip()
-            
-            data = json.loads(content)
-            
-            if not data.get("is_safe", True):
-                category = data.get("violation_category", "UNKNOWN")
-                category_name = self.RISK_CATEGORIES.get(category, "General Safety Violation")
-                return GuardResult(
-                    is_safe=False,
-                    violation_type="UNSAFE_OUTPUT",
-                    message=f"Output flagged for {category_name}: {data.get('reason')}",
-                    metadata={"category": category}
-                )
+            data = ask_json(system_instruction, f"AI Output: {input_text}", llm=self.llm)
         except Exception as e:
-            from backend.shared.utils.logger import get_logger
-            get_logger(__name__).error(f"Llama Guard validation failed: {e}")
-            pass
-            
+            logger.error(f"Llama Guard validation failed: {e}")
+            if guard_fail_closed():
+                return GuardResult(is_safe=False, violation_type="GUARD_UNAVAILABLE",
+                                   message="Output safety check unavailable.")
+            return GuardResult(is_safe=True, metadata={"guard_error": str(e)})
+
+        if not data.get("is_safe", True):
+            category = data.get("violation_category") or "UNKNOWN"
+            category_name = self.RISK_CATEGORIES.get(category, "General Safety Violation")
+            return GuardResult(
+                is_safe=False,
+                violation_type="UNSAFE_OUTPUT",
+                message=f"Output flagged for {category_name}: {data.get('reason')}",
+                metadata={"category": category}
+            )
         return GuardResult(is_safe=True)

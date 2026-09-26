@@ -73,5 +73,8 @@ class GeminiEmbeddingService:
         import asyncio
         return await asyncio.to_thread(self.embed_query, text)
 
-# Global instance for backward compatibility
-embedding = GeminiEmbeddingService()
+# Global instance for backward compatibility. Built lazily so importing this
+# module never requires an API key (the error surfaces on first use instead).
+from backend.shared.utils.lazy import LazyProxy
+
+embedding = LazyProxy(GeminiEmbeddingService, name="gemini_embedding")

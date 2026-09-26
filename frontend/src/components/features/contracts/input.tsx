@@ -1,4 +1,4 @@
-import React, { KeyboardEvent, useRef } from "react";
+import React, { KeyboardEvent, useEffect, useRef } from "react";
 import { Textarea } from "../../shared/ui/textarea";
 import {
     Select,
@@ -17,12 +17,24 @@ import { Message, MessagePart, useChat } from "./provider";
 export function ChatInput() {
     const history = useRef<string[]>([])
     const [submiting, setSubmiting] = React.useState(false);
-    const { addMessage, addMessagePart, updateMessageGenerating, reset } = useChat();
+    const { addMessage, addMessagePart, updateMessageGenerating, clearAiParts, reset } = useChat();
+    // Only offer models the backend actually initialised (depends on configured API keys)
+    const [models, setModels] = React.useState<string[]>(["gemini-2.5-flash"]);
+
+    useEffect(() => {
+        fetch("/api/documents/status")
+            .then((r) => (r.ok ? r.json() : null))
+            .then((data) => {
+                if (data?.available_models?.length) setModels(data.available_models);
+            })
+            .catch(() => { /* keep the default */ });
+    }, []);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-    const handleSubmit = async (event: any) => {
+    const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
         event.preventDefault();
-        const formData = new FormData(event.target);
+        const form = event.currentTarget;
+        const formData = new FormData(form);
         const model = formData.get("model") as string;
         const prompt = formData.get("prompt") as string;
 
@@ -49,7 +61,7 @@ export function ChatInput() {
         // removed console log
 
         // Clear the form after submission
-        event.target.reset();
+        form.reset();
 
         await fetchEventSource('/api/run/', {
             method: 'POST',
@@ -63,7 +75,11 @@ export function ChatInput() {
                 if (data.type === "end") {
                     updateMessageGenerating(aiMessage.id, false);
                 } else if (data.type === "history") {
-                    history.current = [...history.current, ...data.content]
+                    // The server sends the full conversation; replace, never append,
+                    // otherwise the history doubles on every turn.
+                    history.current = data.content as unknown as string[];
+                } else if (data.type === "retract") {
+                    clearAiParts(aiMessage.id);
                 } else {
                     addMessagePart(aiMessage.id, data);
                 }
@@ -73,8 +89,10 @@ export function ChatInput() {
             },
             onclose() {
                 setSubmiting(false);
+                // Stop the spinner even if the stream ended without an 'end' event
+                updateMessageGenerating(aiMessage.id, false);
             },
-            onerror(err) {
+            onerror() {
                 setSubmiting(false);
                 // removed console error
                 addMessagePart(aiMessage.id, { type: "ai_message", content: "Error: Failed to generate the response." });
@@ -84,7 +102,7 @@ export function ChatInput() {
         });
     };
 
-    const handleClear = (event: MouseEvent) => {
+    const handleClear = (event: MouseEvent<HTMLButtonElement>) => {
         event.preventDefault();
         reset();
         history.current = [];
@@ -114,15 +132,15 @@ export function ChatInput() {
                     ref={textareaRef}
                 />
                 <div className="flex gap-2">
-                    <Select name="model" defaultValue="gemini-2.5-flash">
+                    <Select key={models.join(",")} name="model" defaultValue={models[0]}>
                         <SelectTrigger className=" flex-1 text-foreground">
                             <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
                             <SelectGroup>
-                                <SelectItem value="gemini-1.5-pro">gemini-1.5-pro</SelectItem>
-                                <SelectItem value="gemini-2.5-flash">gemini-2.5-flash</SelectItem>
-                                <SelectItem value="gpt-4o">gpt-4o</SelectItem>
+                                {models.map((m) => (
+                                    <SelectItem key={m} value={m}>{m}</SelectItem>
+                                ))}
                             </SelectGroup>
                         </SelectContent>
                     </Select>

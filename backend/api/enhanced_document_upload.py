@@ -194,12 +194,7 @@ async def upload_pdf_enhanced(
 async def get_embedding_status(contract_id: str):
     """Get embedding status for a specific contract"""
     try:
-        from langchain_neo4j import Neo4jGraph
-        
-        graph = Neo4jGraph(
-            refresh_schema=False, 
-            driver_config={"notifications_min_severity": "OFF"}
-        )
+        from backend.shared.utils.contract_search_tool import graph
         
         # Check embedding status
         query = """

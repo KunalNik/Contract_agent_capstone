@@ -5,6 +5,7 @@ from langchain_core.tools import BaseTool
 from backend.shared.utils.gemini_embedding_service import embedding
 from langchain_neo4j import Neo4jGraph
 from pydantic import BaseModel, Field
+from backend.shared.utils.request_context import current_tenant
 from backend.shared.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -34,9 +35,9 @@ class Location(BaseModel):
     country: Optional[str] = Field(None, description="Use two-letter ISO standard")
     state: Optional[str]
 
-graph: Neo4jGraph = Neo4jGraph(
-    refresh_schema=False, driver_config={"notifications_min_severity": "OFF"}
-)
+# Reuse the shared lazily-connected graph instead of opening a second driver
+from backend.shared.utils.contract_search_tool import graph  # noqa: E402
+
 # embedding imported from gemini_embedding_service (1536 dimensions)
 
 def get_contracts_multi_level(
@@ -93,7 +94,7 @@ def _search_documents(embeddings, tenant_id, summary_search, filters, params,
     if governing_law and governing_law.country:
         filters.append("""EXISTS {
             MATCH (c)-[:HAS_GOVERNING_LAW]->(country)
-            WHERE toLower(country.country) = $governing_law_country
+            WHERE toLower(country.name) CONTAINS $governing_law_country
         }""")
         params["governing_law_country"] = governing_law.country.lower()
     
@@ -388,8 +389,6 @@ class EnhancedContractInput(BaseModel):
     active: Optional[bool] = Field(None, description="Whether the contract is active")
     governing_law: Optional[Location] = Field(None, description="Governing law of the contract")
     monetary_value: Optional[MonetaryValue] = Field(None, description="The total amount or value of a contract")
-    cypher_aggregation: Optional[str] = Field(None, description="Custom Cypher statement for advanced aggregations")
-    tenant_id: str = Field(..., description="The ID of the tenant requesting the search")
 
 class EnhancedContractSearchTool(BaseTool):
     name: str = "EnhancedContractSearch"
@@ -401,7 +400,6 @@ class EnhancedContractSearchTool(BaseTool):
 
     def _run(
         self,
-        tenant_id: str,
         search_level: SearchLevel = SearchLevel.DOCUMENT,
         clause_types: Optional[List[str]] = None,
         section_types: Optional[List[str]] = None,
@@ -414,13 +412,12 @@ class EnhancedContractSearchTool(BaseTool):
         summary_search: Optional[str] = None,
         active: Optional[bool] = None,
         monetary_value: Optional[MonetaryValue] = None,
-        cypher_aggregation: Optional[str] = None,
         governing_law: Optional[Location] = None
     ) -> str:
         """Use the enhanced search tool"""
         return get_contracts_multi_level(
             embedding,
-            tenant_id,
+            current_tenant(),
             search_level,
             clause_types,
             section_types,
@@ -432,7 +429,7 @@ class EnhancedContractSearchTool(BaseTool):
             parties,
             summary_search,
             active,
-            cypher_aggregation,
+            None,  # cypher_aggregation: never accepted from the LLM
             monetary_value,
             governing_law
         )

@@ -1,42 +1,37 @@
 import re
-from typing import List, Optional, Dict, Any
+from typing import Optional, Dict, Any
 from ..base import IGuardValidator, GuardResult
 
+
 class TopicValidator(IGuardValidator):
-    """Ensures the prompt stays within the domain of contract analysis"""
-    
-    ALLOWED_KEYWORDS = {
-        "contract", "agreement", "lease", "clause", "liability", 
-        "termination", "party", "parties", "legal", "provision",
-        "indemnity", "warranty", "signature", "effective date",
-        "expiration", "amendment", "addendum", "exhibit"
-    }
+    """Blocks requests that are clearly unrelated to contract analysis.
+
+    Only explicit off-topic tasks are blocked. Prompts that merely lack a
+    contract keyword are allowed through (the LLM intent check and the
+    assistant's system prompt handle borderline cases); the old
+    "no keyword => block" rule rejected ordinary questions such as
+    "What are the payment terms?".
+    """
+
+    OFF_TOPIC_PATTERNS = [
+        r"\btell me a joke\b",
+        r"\bwrite (me )?a (poem|song|story)\b",
+        r"\bhow (to|do i|can i) make a (bomb|weapon|explosive)\b",
+        r"\b(write|give me) (python|javascript|java|c\+\+|sql) code\b",
+        r"\bpython code for\b",
+        r"\bhow do i cook\b",
+        r"\brecipe for\b",
+        r"\bweather (in|for|today)\b",
+        r"\bwho is the president\b",
+    ]
 
     def validate(self, input_text: str, context: Optional[Dict[str, Any]] = None) -> GuardResult:
         prompt_lower = input_text.lower()
-        if len(input_text.split()) < 3:
-            return GuardResult(is_safe=True)
-            
-        has_context = any(re.search(r'\b' + re.escape(keyword) + r'\b', prompt_lower) for keyword in self.ALLOWED_KEYWORDS)
-        
-        OFF_TOPIC_TASKS = [
-            "tell me a joke", "write a poem", "how to make a bomb", 
-            "python code for", "how do i cook", "weather in",
-            "capital of", "who is the president"
-        ]
-        for task in OFF_TOPIC_TASKS:
-            if task in prompt_lower:
+        for pattern in self.OFF_TOPIC_PATTERNS:
+            if re.search(pattern, prompt_lower):
                 return GuardResult(
                     is_safe=False,
                     violation_type="OUT_OF_SCOPE",
-                    message=f"Request is outside the scope of contract analysis: '{task}'"
+                    message="Request is outside the scope of contract analysis."
                 )
-
-        if not has_context and len(input_text.split()) >= 4:
-             return GuardResult(
-                is_safe=False,
-                violation_type="OUT_OF_SCOPE",
-                message="The request does not appear to be related to contract analysis."
-            )
-            
         return GuardResult(is_safe=True)

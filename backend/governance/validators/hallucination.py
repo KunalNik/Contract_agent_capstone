@@ -1,6 +1,6 @@
-import json
 from typing import Dict, Any, Optional
 from ..base import IGuardValidator, GuardResult
+from ..llm_judge import ask_json, guard_fail_closed
 from backend.shared.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -11,16 +11,11 @@ class HallucinationValidator(IGuardValidator):
     Uses an LLM-based "Critic" to compare the output against provided source context.
     """
     
-    def __init__(self):
-        super().__init__()
-        self._llm_mgr = None
+    MAX_SOURCE_CHARS = 30000
 
-    @property
-    def llm_mgr(self):
-        if self._llm_mgr is None:
-            from backend.llm_manager import LLMManager
-            self._llm_mgr = LLMManager()
-        return self._llm_mgr
+    def __init__(self, llm=None):
+        super().__init__()
+        self.llm = llm
 
     def validate(self, input_text: str, context: Optional[Dict[str, Any]] = None) -> GuardResult:
         """
@@ -51,32 +46,25 @@ class HallucinationValidator(IGuardValidator):
         )
 
         prompt = (
-            f"Source Text (Contract Content):\n{source_text}\n\n"
+            f"Source Text (Contract Content):\n{source_text[:self.MAX_SOURCE_CHARS]}\n\n"
             f"AI-Generated Response to Verify:\n{input_text}\n"
         )
 
         try:
-            model = self.llm_mgr.get_model_by_name("gemini-2.5-flash")
-            response = model.invoke(f"System: {system_instruction}\nPrompt: {prompt}")
-            
-            content = response.content.strip()
-            if "```json" in content:
-                content = content.split("```json")[-1].split("```")[0].strip()
-            
-            data = json.loads(content)
-            
-            if data.get("is_hallucination", False):
-                logger.warning(f"Hallucination detected: {data.get('reason')}")
-                return GuardResult(
-                    is_safe=False,
-                    violation_type="HALLUCINATION_DETECTED",
-                    message=f"The assistant's response contains information not supported by the source contract: {data.get('reason')}",
-                    metadata={"hallucination_details": data}
-                )
+            data = ask_json(system_instruction, prompt, llm=self.llm)
         except Exception as e:
             logger.error(f"Hallucination check failed: {e}")
-            # In case of failure, we might want to fail-safe (pass) or fail-secure (block).
-            # For this implementation, we fail-safe to avoid blocking users on technical errors.
-            return GuardResult(is_safe=True)
+            if guard_fail_closed():
+                return GuardResult(is_safe=False, violation_type="GUARD_UNAVAILABLE",
+                                   message="Fact-check unavailable.")
+            return GuardResult(is_safe=True, metadata={"guard_error": str(e)})
 
+        if data.get("is_hallucination", False):
+            logger.warning(f"Hallucination detected: {data.get('reason')}")
+            return GuardResult(
+                is_safe=False,
+                violation_type="HALLUCINATION_DETECTED",
+                message=f"The assistant's response contains information not supported by the source contract: {data.get('reason')}",
+                metadata={"hallucination_details": data}
+            )
         return GuardResult(is_safe=True)

@@ -135,6 +135,9 @@ class QueryAnalyzer:
 
 class PlanningAgent:
     """Autonomous Planning & Reasoning Agent"""
+
+    # Process-wide counter (instances are created per analysis)
+    total_plans_created = 0
     
     def __init__(self):
         self.strategies = {
@@ -164,6 +167,7 @@ class PlanningAgent:
         
         # Store for learning
         self.execution_history.append(validated_plan)
+        PlanningAgent.total_plans_created += 1
         
         logger.info(f"🧠 Planning Agent: Created {strategy} plan with {len(validated_plan.steps)} steps")
         return validated_plan

@@ -19,6 +19,7 @@ def get_agent(llm):
         "Always explain results you get from the tools in a concise manner to not overwhelm the user but also don't be too technical. "
         "Answer questions as if you are answering to non-technical management level. "
         "Important: Be confident and accurate in your tool choice! Avoid asking follow-up questions if possible. "
+        "Searches are automatically limited to the current user's organisation; never ask for a tenant ID. "
         f"Today is {date.today()}"
     )
 
@@ -59,46 +60,47 @@ def get_agent(llm):
         if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
             # Execute tools manually
             tool_messages = []
-            # Execute tools manually
-            tool_messages = []
             from backend.infrastructure.agent_audit_service import AgentAuditService
             from backend.shared.utils.logger import correlation_id_var
             
             audit_service = AgentAuditService()
             session_id = correlation_id_var.get() or "unknown_session"
 
+            tools_by_name = {t.name: t for t in tools}
             for tool_call in last_message.tool_calls:
-                # Find and execute the tool
-                for tool in tools:
-                    if tool.name == tool_call['name']:
-                        try:
-                            result = tool.invoke(tool_call['args'])
-                            
-                            # Log tool execution
-                            audit_service.log_tool_execution(
-                                tool_name=tool.name,
-                                args=tool_call['args'],
-                                result=str(result),
-                                session_id=session_id,
-                                status="success"
-                            )
-                            
-                            # Create proper ToolMessage
-                            tool_message = ToolMessage(
-                                content=str(result),
-                                tool_call_id=tool_call['id']
-                            )
-                            tool_messages.append(tool_message)
-                        except Exception as e:
-                            # Log tool failure
-                            audit_service.log_tool_execution(
-                                tool_name=tool.name,
-                                args=tool_call['args'],
-                                result=str(e),
-                                session_id=session_id,
-                                status="failure"
-                            )
-                            raise
+                tool = tools_by_name.get(tool_call['name'])
+                if tool is None:
+                    # Every tool call needs a reply or the provider rejects the next turn
+                    tool_messages.append(ToolMessage(
+                        content=f"Unknown tool '{tool_call['name']}'. Available: {', '.join(tools_by_name)}",
+                        tool_call_id=tool_call['id'],
+                        status="error",
+                    ))
+                    continue
+                try:
+                    result = tool.invoke(tool_call['args'])
+                    audit_service.log_tool_execution(
+                        tool_name=tool.name,
+                        args=tool_call['args'],
+                        result=str(result),
+                        session_id=session_id,
+                        status="success"
+                    )
+                    tool_messages.append(ToolMessage(content=str(result), tool_call_id=tool_call['id']))
+                except Exception as e:
+                    # Report the failure to the model instead of aborting the whole chat turn
+                    audit_service.log_tool_execution(
+                        tool_name=tool.name,
+                        args=tool_call['args'],
+                        result=str(e),
+                        session_id=session_id,
+                        status="failure"
+                    )
+                    tool_messages.append(ToolMessage(
+                        content=f"Tool error: {e}",
+                        tool_call_id=tool_call['id'],
+                        status="error",
+                    ))
             return {"messages": tool_messages}
         return {"messages": []}
 

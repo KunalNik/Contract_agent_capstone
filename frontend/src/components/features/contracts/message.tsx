@@ -1,6 +1,14 @@
 import { Fragment } from "react";
 import { Loader } from "../../shared/ui/loader";
-import { Message } from "./provider";
+import { Message, MessagePartContent } from "./provider";
+
+function toText(content: MessagePartContent): string {
+    if (typeof content === "string") return content;
+    if (Array.isArray(content)) {
+        return content.map((c) => (typeof c === "string" ? c : c.text ?? JSON.stringify(c))).join("");
+    }
+    return content.text ?? JSON.stringify(content);
+}
 
 interface Props {
     message: Message;
@@ -17,23 +25,17 @@ export function ChatMessage({ message }: Props) {
                         case "tool_call":
                             return <details key={index} className="my-3 cursor-pointer">
                                 <summary>Tool call</summary>
-                                <code className="block p-1 bg-muted rounded-sm overflow-x-auto font-mono text-sm">{content}</code>
+                                <code className="block p-1 bg-muted rounded-sm overflow-x-auto font-mono text-sm">{toText(content)}</code>
                             </details>
                         case "tool_message":
                             return <details key={index} className="my-3 cursor-pointer">
                                 <summary>Tool message</summary>
-                                <code className="block p-1 bg-muted rounded-sm overflow-x-auto font-mono text-sm">{content}</code>
+                                <code className="block p-1 bg-muted rounded-sm overflow-x-auto font-mono text-sm">{toText(content)}</code>
                             </details>
+                        case "error":
+                            return <div key={index} className="my-2 text-sm text-red-600">{toText(content)}</div>;
                         default:
-                            let displayContent: React.ReactNode = content;
-                            if (typeof content === 'object' && content !== null) {
-                                if (Array.isArray(content)) {
-                                    displayContent = content.map((c: any) => c.text || JSON.stringify(c)).join('');
-                                } else {
-                                    displayContent = (content as any).text || JSON.stringify(content);
-                                }
-                            }
-                            return <Fragment key={index}>{displayContent as string}</Fragment>;
+                            return <Fragment key={index}>{toText(content)}</Fragment>;
                     }
                 })}
                 {generating && (

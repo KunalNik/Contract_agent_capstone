@@ -94,7 +94,8 @@ class BaseGuard(ABC):
                         "violation_type": result.violation_type,
                         "violation_message": result.message,
                         "correlation_id": corr_id,
-                        **(context_metadata or {})
+                        # Never copy contract text (source_text) into the audit log
+                        **{k: v for k, v in (context_metadata or {}).items() if k != "source_text"}
                     }
                     self.audit_logger.log_event(
                         event_type=AuditEventType.SECURITY_VIOLATION,

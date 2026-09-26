@@ -1,10 +1,21 @@
 import React, { createContext, useContext, useState, useCallback } from "react";
 
-export type MessagePartType = "user_message" | "ai_message" | "tool_call" | "tool_message" | "history" | "end";
+export type MessagePartType =
+    | "user_message"
+    | "ai_message"
+    | "tool_call"
+    | "tool_message"
+    | "history"
+    | "error"
+    | "retract"
+    | "end";
+
+// Most parts carry text; some providers stream structured content blocks.
+export type MessagePartContent = string | Array<{ text?: string } | string> | { text?: string };
 
 export type MessagePart = {
     type: MessagePartType;
-    content: string;
+    content: MessagePartContent;
 };
 
 export type Message = {
@@ -23,6 +34,7 @@ type ChatProviderState = {
     addMessage: (message: Message) => void;
     addMessagePart: (id: string, part: MessagePart) => void;
     updateMessageGenerating: (id: string, generating: boolean) => void;
+    clearAiParts: (id: string) => void;
     reset: () => void;
 };
 
@@ -31,6 +43,7 @@ const initialState: ChatProviderState = {
     addMessage: () => null,
     addMessagePart: () => null,
     updateMessageGenerating: () => null,
+    clearAiParts: () => null,
     reset: () => null
 };
 
@@ -63,6 +76,17 @@ export function ChatProvider({ children }: ChatProviderProps) {
         );
     }, []);
 
+    // Used when the server retracts an answer that failed the output safety check
+    const clearAiParts = useCallback((id: string) => {
+        setMessages((prevMessages) =>
+            prevMessages.map((message) =>
+                message.id === id
+                    ? { ...message, parts: message.parts.filter((p) => p.type !== "ai_message") }
+                    : message
+            )
+        );
+    }, []);
+
     const reset = () => {
         setMessages([]);
     };
@@ -72,6 +96,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         addMessage,
         addMessagePart,
         updateMessageGenerating,
+        clearAiParts,
         reset
     };
 

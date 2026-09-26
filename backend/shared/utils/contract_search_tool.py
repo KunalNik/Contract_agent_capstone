@@ -5,6 +5,7 @@ from langchain_core.tools import BaseTool
 from backend.shared.utils.gemini_embedding_service import embedding
 from langchain_neo4j import Neo4jGraph
 from pydantic import BaseModel, Field
+from backend.shared.utils.request_context import current_tenant
 from enum import Enum
 
 load_dotenv()
@@ -50,8 +51,13 @@ CONTRACT_TYPES = [
     "Licensing Addendum",
 ]
 
-graph: Neo4jGraph = Neo4jGraph(
-    refresh_schema=False, driver_config={"notifications_min_severity": "OFF"}
+from backend.shared.utils.lazy import LazyProxy
+
+# Connection is created on first query, not at import time, so the API can
+# start (and report health) even when Neo4j is unreachable.
+graph: Neo4jGraph = LazyProxy(
+    lambda: Neo4jGraph(refresh_schema=False, driver_config={"notifications_min_severity": "OFF"}),
+    name="neo4j_graph",
 )
 # embedding imported from gemini_embedding_service (1536 dimensions)
 
@@ -99,7 +105,7 @@ def get_contracts(
             filters.append(
             """EXISTS {
                 MATCH (c)-[:HAS_GOVERNING_LAW]->(country)
-                WHERE toLower(country.country) = $governing_law_country
+                WHERE toLower(country.name) CONTAINS $governing_law_country
             }""")
             params["governing_law_country"] = governing_law.country.lower()
 
@@ -165,22 +171,21 @@ def get_contracts(
             ORDER BY doc_score DESC
             """
 
-    if cypher_aggregation:
-        cypher_statement += f"\n {cypher_aggregation}"
-    else:
-        cypher_statement += """
-        RETURN {
-            total_count: count(c),
-            contracts: collect({
-                file_id: c.file_id,
-                summary: c.summary,
-                contract_type: c.contract_type,
-                effective_date: c.effective_date,
-                end_date: c.end_date,
-                parties: [(c)<-[r:PARTY_TO]-(party) | {name: party.name, role: r.role}]
-            })[..10]
-        } AS result
-        """
+    # Raw Cypher from the caller is never executed (prompt-injection risk);
+    # the parameter is kept only for backward-compatible call signatures.
+    cypher_statement += """
+    RETURN {
+        total_count: count(c),
+        contracts: collect({
+            file_id: c.file_id,
+            summary: c.summary,
+            contract_type: c.contract_type,
+            effective_date: c.effective_date,
+            end_date: c.end_date,
+            parties: [(c)<-[r:PARTY_TO]-(party) | {name: party.name, role: r.role}]
+        })[..10]
+    } AS result
+    """
 
     output = graph.query(cypher_statement, params)
     return [convert_neo4j_date(el) for el in output]
@@ -211,11 +216,6 @@ class ContractInput(BaseModel):
     monetary_value: Optional[MonetaryValue] = Field(
         None, description="The total amount or value of a contract"
     )
-    cypher_aggregation: Optional[str] = Field(
-        None,
-        description="""Custom Cypher statement for advanced aggregations and analytics.""",
-    )
-    tenant_id: str = Field(..., description="The ID of the tenant requesting the search")
 
 
 class ContractSearchTool(BaseTool):
@@ -227,7 +227,6 @@ class ContractSearchTool(BaseTool):
 
     def _run(
         self,
-        tenant_id: str,
         min_effective_date: Optional[str] = None,
         max_effective_date: Optional[str] = None,
         min_end_date: Optional[str] = None,
@@ -237,13 +236,12 @@ class ContractSearchTool(BaseTool):
         summary_search: Optional[str] = None,
         active: Optional[bool] = None,
         monetary_value: Optional[MonetaryValue] = None,
-        cypher_aggregation: Optional[str] = None,
         governing_law: Optional[Location] = None
     ) -> str:
         """Use the tool."""
         return get_contracts(
             embedding,
-            tenant_id,
+            current_tenant(),
             min_effective_date,
             max_effective_date,
             min_end_date,
@@ -252,7 +250,7 @@ class ContractSearchTool(BaseTool):
             parties,
             summary_search,
             active,
-            cypher_aggregation,
+            None,  # cypher_aggregation: never accepted from the LLM
             monetary_value,
             governing_law
         )
