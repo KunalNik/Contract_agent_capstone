@@ -44,7 +44,7 @@ class AuditLogger:
         resource_id: str,
         action: str,
         user_id: Optional[str] = "system",
-        tenant_id: Optional[str] = "demo_tenant_1",
+        tenant_id: Optional[str] = "default-tenant",
         metadata: Optional[Dict[str, Any]] = None,
         status: str = "success",
         error_details: Optional[str] = None

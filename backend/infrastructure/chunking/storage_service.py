@@ -18,17 +18,30 @@ class ChunkingStorageService:
     
     async def store_chunks(self, document_id: str, chunks: List[Dict[str, Any]], 
                          metadata: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Store chunks in Neo4j database with enhanced metadata."""
+        """Store chunks in Neo4j database with enhanced metadata.
+
+        ``document_id`` should be the contract's file_id; the Document node is
+        tagged with the tenant and linked to the Contract so chunk search can
+        filter by tenant (it previously never matched: tenant was never set).
+        """
+        if not chunks:
+            return {'success': True, 'document_id': document_id, 'chunks_stored': 0,
+                    'message': 'No chunks to store'}
+        tenant_id = (metadata or {}).get('tenant_id', 'default-tenant')
         try:
             # First, ensure document exists with enhanced metadata
             doc_query = """
             MERGE (d:Document {id: $document_id})
-            SET d.chunk_count = $chunk_count,
+            SET d.tenant_id = $tenant_id,
+                d.chunk_count = $chunk_count,
                 d.chunking_metadata = $metadata,
                 d.last_chunked = datetime(),
                 d.chunking_strategy = $strategy,
                 d.avg_chunk_size = $avg_chunk_size,
                 d.total_chunks = $total_chunks
+            WITH d
+            OPTIONAL MATCH (c:Contract {file_id: $document_id, tenant_id: $tenant_id})
+            FOREACH (_ IN CASE WHEN c IS NULL THEN [] ELSE [1] END | MERGE (c)-[:HAS_DOCUMENT]->(d))
             """
             
             # Calculate average chunk size
@@ -38,6 +51,7 @@ class ChunkingStorageService:
             import json
             self.graph.query(doc_query, {
                 'document_id': document_id,
+                'tenant_id': tenant_id,
                 'chunk_count': len(chunks),
                 'metadata': json.dumps(metadata or {}),
                 'strategy': strategy_used,
@@ -45,8 +59,14 @@ class ChunkingStorageService:
                 'total_chunks': len(chunks)
             })
                 
+            # Re-chunking replaces previous chunks instead of duplicating them
+            self.graph.query(
+                "MATCH (:Document {id: $document_id})-[:HAS_CHUNK]->(old:Chunk) DETACH DELETE old",
+                {'document_id': document_id},
+            )
+
             # Store each chunk with enhanced properties
-            for chunk in chunks:
+            for index, chunk in enumerate(chunks):
                 chunk_query = """
                 MATCH (d:Document {id: $document_id})
                 CREATE (c:Chunk {
@@ -68,7 +88,7 @@ class ChunkingStorageService:
                 CREATE (d)-[:HAS_CHUNK {index: $chunk_index}]->(c)
                 """
                 
-                chunk_id = f"{document_id}_chunk_{chunk.get('chunk_index', 0)}"
+                chunk_id = f"{document_id}_chunk_{chunk.get('chunk_index', index)}"
                 
                 self.graph.query(chunk_query, {
                     'document_id': document_id,
@@ -78,7 +98,7 @@ class ChunkingStorageService:
                     'end_position': chunk.get('end_position', 0),
                     'chunk_type': chunk.get('chunk_type', 'unknown'),
                     'size': chunk.get('size', len(chunk['content'])),
-                    'chunk_index': chunk.get('chunk_index', 0),
+                    'chunk_index': chunk.get('chunk_index', index),
                     'quality_score': chunk.get('quality_score', 0.0),
                     'has_overlap': chunk.get('has_overlap', False),
                     'overlap_size': chunk.get('overlap_size', 0),
@@ -341,7 +361,7 @@ class ChunkingStorageService:
 class ChunkStorageService(ChunkingStorageService):
     """Backward compatibility wrapper."""
     
-    def store_chunks(self, contract_id: str, chunks: List, tenant_id: str = "demo_tenant_1") -> List[str]:
+    def store_chunks(self, contract_id: str, chunks: List, tenant_id: str = "default-tenant") -> List[str]:
         """Synchronous backward compatibility method handling both objects and dictionaries."""
         chunk_ids = []
         
@@ -372,8 +392,7 @@ class ChunkStorageService(ChunkingStorageService):
                         dc.created_at = datetime()
                     
                     WITH dc
-                    MATCH (c:Contract)
-                    WHERE c.file_id CONTAINS $contract_id
+                    MATCH (c:Contract {file_id: $contract_id, tenant_id: $tenant_id})
                     MERGE (c)-[:CONTAINS_CHUNK]->(dc)
                 """, {
                     "chunk_id": chunk_id,

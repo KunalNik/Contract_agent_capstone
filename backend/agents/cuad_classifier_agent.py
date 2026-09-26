@@ -124,6 +124,8 @@ class LLMCUADClassifier(ICUADClassifier):
         
         # Select relevant CUAD types for this clause
         relevant_types = self._select_relevant_types(content)
+        if not relevant_types:
+            return []  # nothing plausible to ask the model about
         
         prompt = f"""
         Classify this contract clause into CUAD categories:
@@ -165,10 +167,29 @@ class LLMCUADClassifier(ICUADClassifier):
         
         return relevant[:5]  # Limit to 5 most relevant
     
-    def _parse_llm_response(self, response: str, clause_id: str) -> List[CUADClassification]:
-        """Parse LLM response into classifications"""
-        # Simplified - would need proper JSON parsing
-        return []
+    def _parse_llm_response(self, response, clause_id: str) -> List[CUADClassification]:
+        """Parse the LLM's JSON array into classifications (confidence > 0.7 only)."""
+        from backend.governance.llm_judge import _extract_json
+        if isinstance(response, list):
+            response = "".join(p.get("text", "") if isinstance(p, dict) else str(p) for p in response)
+        text = response.strip()
+        try:
+            data = _extract_json(text if text.startswith(("{", "`")) else f'{{"c": {text}}}')
+        except Exception as e:
+            logger.error(f"Could not parse LLM CUAD output: {e}")
+            return []
+        items = data.get("c") or data.get("classifications") or [] if isinstance(data, dict) else data
+        results = []
+        for item in items or []:
+            try:
+                confidence = float(item.get("confidence", 0))
+            except (TypeError, ValueError):
+                continue
+            if item.get("cuad_type") and confidence > 0.7:
+                results.append(CUADClassification(clause_id=clause_id, cuad_type=str(item["cuad_type"]),
+                                                  confidence=min(confidence, 1.0), detected_by="llm",
+                                                  reasoning=str(item.get("reasoning", ""))))
+        return results
 
 def cuad_confidence_decorator(func):
     """Decorator to adjust CUAD confidence scores"""

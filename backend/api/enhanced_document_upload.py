@@ -1,12 +1,10 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Depends, Request
-from backend.governance.rbac import Permission, requires_permission
+from backend.governance.rbac import Permission, requires_permission, get_current_user, get_current_tenant, CurrentUser
+from backend.api.document_upload import MAX_UPLOAD_BYTES, content_hash, find_duplicate_contract, safe_temp_path
 from backend.application.services.enhanced_document_processing_service import EnhancedDocumentServiceFactory
 from backend.domain.entities import DocumentProcessingRequest
 from backend.llm_manager import LLMManager
 import os
-import uuid
-import logging
-from typing import Optional
 
 from backend.shared.utils.logger import get_logger
 logger = get_logger(__name__)
@@ -21,125 +19,67 @@ def get_llm_manager(request: Request):
 @router.post("/upload", dependencies=[Depends(requires_permission(Permission.UPLOAD))])
 async def upload_pdf_enhanced(
     file: UploadFile = File(...),
-    tenant_id: str = Query(default="default-tenant", description="Tenant ID for data isolation"),
     model: str = Query(default="gemini-2.5-flash", description="LLM model to use for processing"),
     enable_embeddings: bool = Query(default=True, description="Enable multi-level embeddings processing"),
-    llm_mgr: LLMManager = Depends(get_llm_manager)
+    llm_mgr: LLMManager = Depends(get_llm_manager),
+    user: CurrentUser = Depends(get_current_user),
 ):
     """
     Upload and process PDF contract with enhanced multi-level embeddings
     - Validates file type and size
-    - Processes using enhanced PDF processing agent
+    - Rejects exact duplicates (same bytes) for the caller's tenant
     - Generates document, section, clause, and relationship embeddings
     - Returns processing status with embedding details
     """
-    
+    tenant_id = user.tenant_id
     logger.info(f"=== ENHANCED UPLOAD START: {file.filename if file else 'NO FILE'} ===")
-    
+    temp_path = None
+
     try:
-        # Input validation
-        logger.info(f"Step 1: Input validation for file: {file.filename}")
         if not file.filename:
-            logger.error("No filename provided")
             raise HTTPException(status_code=400, detail="No filename provided")
-        
         if not file.filename.lower().endswith('.pdf'):
-            logger.error(f"Invalid file type: {file.filename}")
             raise HTTPException(status_code=400, detail="Only PDF files are supported")
 
-        # Check file size (50MB limit)
-        logger.info("Step 2: Reading file content")
         file_content = await file.read()
-        logger.info(f"File size: {len(file_content)} bytes")
-        if len(file_content) > 50 * 1024 * 1024:
-            logger.error(f"File too large: {len(file_content)} bytes")
+        if len(file_content) > MAX_UPLOAD_BYTES:
             raise HTTPException(status_code=400, detail="File too large (max 50MB)")
 
-        # Check for duplicate by filename
-        logger.info("Step 3: Checking for duplicates")
-        try:
-            from backend.infrastructure.contract_repository import Neo4jContractRepository
-            repo = Neo4jContractRepository()
-            
-            existing_query = "MATCH (c:Contract) WHERE c.file_id CONTAINS $filename RETURN c.file_id LIMIT 1"
-            existing = repo.graph.query(existing_query, {"filename": file.filename.replace(".pdf", "")})
-            logger.info(f"Duplicate check completed. Found: {len(existing) if existing else 0} matches")
-        except Exception as query_error:
-            logger.error(f"Duplicate check query failed: {query_error}")
-            existing = []
-        
-        if existing:
+        digest = content_hash(file_content)
+        existing_id = find_duplicate_contract(tenant_id, digest)
+        if existing_id:
             return {
                 "message": "Duplicate file detected",
                 "filename": file.filename,
                 "status": "duplicate",
-                "existing_contract_id": existing[0]["file_id"],
+                "existing_contract_id": existing_id,
+                "contract_id": existing_id,
                 "action": "skipped",
                 "enhanced_embeddings": False
             }
 
-        # Save file temporarily
-        logger.info("Step 4: Saving file temporarily")
-        temp_filename = f"{uuid.uuid4().hex}_{file.filename}"
-        temp_path = f"/tmp/{temp_filename}"
-        
-        try:
-            with open(temp_path, "wb") as temp_file:
-                temp_file.write(file_content)
-            logger.info(f"File saved successfully: {file.filename} -> {temp_path}")
-        except Exception as save_error:
-            logger.error(f"Failed to save file: {save_error}")
-            raise
+        temp_path = safe_temp_path(file.filename)
+        with open(temp_path, "wb") as temp_file:
+            temp_file.write(file_content)
 
-        # Extract full text for storage
-        logger.info("Step 5: Extracting text from PDF")
-        try:
-            from backend.infrastructure.text_extractors import TextExtractionService
-            text_extractor = TextExtractionService()
-            full_text = text_extractor.extract_with_fallback(temp_path)
-            logger.info(f"Text extraction completed. Length: {len(full_text)} characters")
-        except Exception as extract_error:
-            logger.error(f"Text extraction failed: {extract_error}")
-            raise
+        processing_request = DocumentProcessingRequest(
+            file_path=temp_path,
+            filename=file.filename,
+            tenant_id=tenant_id,
+            user_id=user.user_id,
+            processing_options={"model": model, "enable_embeddings": enable_embeddings, "content_hash": digest},
+        )
 
-        # Create enhanced processing request
-        logger.info("Step 6: Creating enhanced processing request")
-        try:
-            processing_request = DocumentProcessingRequest(
-                file_path=temp_path,
-                filename=file.filename,
-                tenant_id=tenant_id,
-                processing_options={
-                    "model": model, 
-                    "full_text": full_text,
-                    "enable_embeddings": enable_embeddings
-                }
-            )
-            logger.info("Enhanced processing request created successfully")
-        except Exception as request_error:
-            logger.error(f"Failed to create processing request: {request_error}")
-            raise
-
-        # Process with enhanced embeddings
-        logger.info(f"Step 7: Starting enhanced document processing for: {file.filename}")
         try:
             if enable_embeddings:
-                # Create service with injected agent manager
-                enhanced_document_service = EnhancedDocumentServiceFactory.create_service(llm_mgr)
-                result = enhanced_document_service.process_pdf_with_embeddings(processing_request)
+                service = EnhancedDocumentServiceFactory.create_service(llm_mgr)
+                result = await service.process_pdf_with_embeddings(processing_request)
             else:
-                # Fallback to regular processing
                 from backend.application.services.document_processing_service import DocumentServiceFactory
-                regular_service = DocumentServiceFactory.create_service(llm_mgr)
-                result = regular_service.process_pdf_upload(processing_request)
+                result = await DocumentServiceFactory.create_service(llm_mgr).process_pdf_upload(processing_request)
                 result["enhanced_embeddings"] = False
-            
-            logger.info(f"Enhanced document processing completed successfully: {result}")
         except Exception as proc_error:
-            logger.error(f"Enhanced document processing failed: {str(proc_error)}")
-            import traceback
-            logger.error(f"Processing traceback: {traceback.format_exc()}")
-            
+            logger.error(f"Enhanced document processing failed: {proc_error}", exc_info=True)
             return {
                 "message": "Enhanced PDF processing failed",
                 "filename": file.filename,
@@ -150,68 +90,52 @@ async def upload_pdf_enhanced(
                 "enhanced_embeddings": False,
                 "error_type": type(proc_error).__name__
             }
-        
-        logger.info(f"Enhanced PDF processing completed for {file.filename}: {result['status']}")
-        
-        # Extract contract ID from result
-        contract_id = result.get("contract_id")
-        if not contract_id and "SUCCESS: Contract stored with ID:" in result.get("final_result", ""):
-            contract_id = result["final_result"].split("SUCCESS: Contract stored with ID:")[-1].strip()
-        
+
         return {
             "message": "Enhanced PDF processing completed",
             "filename": file.filename,
             "status": result["status"],
-            "contract_id": contract_id,
+            "contract_id": result.get("contract_id"),
             "details": result.get("final_result", ""),
             "model_used": model,
-            "enhanced_embeddings": result.get("enhanced_embeddings", enable_embeddings),
+            "enhanced_embeddings": result.get("enhanced_embeddings", False),
             "embedding_types": ["document", "section", "clause", "relationship"] if result.get("enhanced_embeddings") else []
         }
-        
+
     except HTTPException:
-        logger.error(f"HTTP Exception in enhanced upload: {file.filename if file else 'unknown'}")
         raise
     except Exception as e:
-        logger.error(f"=== ENHANCED UPLOAD FAILED: {file.filename if file else 'unknown'} ===")
-        logger.error(f"Error: {e}")
-        import traceback
-        logger.error(f"Full traceback: {traceback.format_exc()}")
-        
-        # Cleanup temp file if it exists
-        if 'temp_path' in locals() and temp_path and os.path.exists(temp_path):
-            try:
-                os.remove(temp_path)
-                logger.info(f"Cleaned up temp file: {temp_path}")
-            except Exception as cleanup_error:
-                logger.error(f"Failed to cleanup temp file: {cleanup_error}")
-                
+        logger.error(f"=== ENHANCED UPLOAD FAILED: {file.filename if file else 'unknown'}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Enhanced processing failed: {str(e)}")
     finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
         logger.info(f"=== ENHANCED UPLOAD END: {file.filename if file else 'unknown'} ===")
 
-@router.get("/embedding-status/{contract_id}")
-async def get_embedding_status(contract_id: str):
+@router.get("/embedding-status/{contract_id}", dependencies=[Depends(requires_permission(Permission.VIEW_REPORTS))])
+async def get_embedding_status(contract_id: str, tenant_id: str = Depends(get_current_tenant)):
     """Get embedding status for a specific contract"""
     try:
         from backend.shared.utils.contract_search_tool import graph
         
         # Check embedding status
         query = """
-        MATCH (c:Contract {file_id: $contract_id})
+        MATCH (c:Contract {file_id: $contract_id, tenant_id: $tenant_id})
         OPTIONAL MATCH (c)-[:HAS_SECTION]->(s:Section)
-        OPTIONAL MATCH (c)-[:CONTAINS_CLAUSE]->(cl:Clause)
+        OPTIONAL MATCH (c)-[:HAS_SECTION|CONTAINS_CLAUSE*1..2]->(cl:Clause)
         OPTIONAL MATCH (c)<-[r:PARTY_TO]-()
         RETURN 
             c.document_embedding IS NOT NULL as has_document_embedding,
             c.summary_embedding IS NOT NULL as has_summary_embedding,
             count(DISTINCT s) as section_count,
+            count(DISTINCT CASE WHEN s.embedding IS NOT NULL THEN s END) as section_embeddings,
             count(DISTINCT cl) as clause_count,
+            count(DISTINCT CASE WHEN cl.embedding IS NOT NULL THEN cl END) as clause_embeddings,
             count(DISTINCT r) as relationship_count,
             count(DISTINCT CASE WHEN r.embedding IS NOT NULL THEN r END) as relationship_embeddings
         """
         
-        result = graph.query(query, {"contract_id": contract_id})
+        result = graph.query(query, {"contract_id": contract_id, "tenant_id": tenant_id})
         
         if not result:
             raise HTTPException(status_code=404, detail="Contract not found")
@@ -225,11 +149,13 @@ async def get_embedding_status(contract_id: str):
                 "summary_embedding": data["has_summary_embedding"],
                 "sections": {
                     "count": data["section_count"],
-                    "has_embeddings": data["section_count"] > 0
+                    "embedded_count": data["section_embeddings"],
+                    "has_embeddings": data["section_embeddings"] > 0
                 },
                 "clauses": {
                     "count": data["clause_count"],
-                    "has_embeddings": data["clause_count"] > 0
+                    "embedded_count": data["clause_embeddings"],
+                    "has_embeddings": data["clause_embeddings"] > 0
                 },
                 "relationships": {
                     "count": data["relationship_count"],
@@ -240,8 +166,8 @@ async def get_embedding_status(contract_id: str):
             "total_embeddings": (
                 (1 if data["has_document_embedding"] else 0) +
                 (1 if data["has_summary_embedding"] else 0) +
-                data["section_count"] +
-                data["clause_count"] +
+                data["section_embeddings"] +
+                data["clause_embeddings"] +
                 data["relationship_embeddings"]
             )
         }

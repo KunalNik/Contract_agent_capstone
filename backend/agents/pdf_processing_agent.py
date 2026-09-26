@@ -11,9 +11,10 @@ import json
 from backend.shared.utils.logger import get_logger
 logger = get_logger(__name__)
 
-def get_pdf_processing_agent(llm):
+def build_pdf_nodes(llm):
     """
-    Create PDF processing agent with proper state management
+    Build the reusable PDF processing nodes (extract -> analyze -> store).
+    Shared by the basic and enhanced agents.
     """
     
     # Initialize services (Dependency Injection)
@@ -104,7 +105,9 @@ def get_pdf_processing_agent(llm):
                 "governing_law": contract_data.governing_law,
                 "key_terms": contract_data.key_terms,
                 "full_text": contract_data.full_text,
-                "tenant_id": tenant_id
+                "tenant_id": tenant_id,
+                "filename": state.get("filename"),
+                "content_hash": state.get("content_hash"),
             }
             
             contract_id = await contract_repository.store_contract(data_dict, tenant_id)
@@ -131,7 +134,25 @@ def get_pdf_processing_agent(llm):
         if not state.get("contract_data"):
             return "analyze_contract"
         return "store_contract"
-    
+
+    return {
+        "extract_text": extract_text_node,
+        "analyze_contract": analyze_contract_node,
+        "store_contract": store_contract_node,
+        "should_continue": should_continue,
+    }
+
+
+def get_pdf_processing_agent(llm):
+    """
+    Create PDF processing agent with proper state management
+    """
+    nodes = build_pdf_nodes(llm)
+    extract_text_node = nodes["extract_text"]
+    analyze_contract_node = nodes["analyze_contract"]
+    store_contract_node = nodes["store_contract"]
+    should_continue = nodes["should_continue"]
+
     # Build graph with proper state management
     builder = StateGraph(PDFProcessingState)
     builder.add_node("extract_text", extract_text_node)

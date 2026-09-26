@@ -3,7 +3,7 @@ Enhanced PDF Processing Agent with Section and Clause Extraction
 Chain of Responsibility Pattern for complete document processing
 """
 
-from backend.agents.pdf_processing_agent import get_pdf_processing_agent
+from backend.agents.pdf_processing_agent import get_pdf_processing_agent, build_pdf_nodes
 from backend.agents.section_extraction_agent import SectionExtractionAgent
 from backend.agents.clause_extraction_agent import ClauseExtractionAgent
 from backend.agents.cuad_classifier_agent import CUADClassifierAgent
@@ -18,8 +18,8 @@ logger = get_logger(__name__)
 def get_enhanced_pdf_processing_agent(llm):
     """Create enhanced PDF processing agent with section/clause extraction"""
     
-    # Get base agent
-    base_agent = get_pdf_processing_agent(llm)
+    # Reuse the base extract/analyze/store nodes
+    base_nodes = build_pdf_nodes(llm)
     
     # Initialize enhanced services
     section_extractor = SectionExtractionAgent(llm, strategy="hybrid")
@@ -35,7 +35,9 @@ def get_enhanced_pdf_processing_agent(llm):
             return state
         
         try:
-            contract_id = state.get("processing_result", {}).get("contract_id")
+            processing_result = state.get("processing_result")
+            # processing_result is a ProcessingResult dataclass, not a dict
+            contract_id = getattr(processing_result, "contract_id", None)
             if not contract_id:
                 return state
             
@@ -87,7 +89,7 @@ def get_enhanced_pdf_processing_agent(llm):
                 embedding_service.generate_section_embeddings(sections)
                 embedding_service.generate_clause_embeddings(all_clauses)
                 
-                logger.info(f"Extracted {len(all_clauses)} clauses, {len(classifications)} CUAD classifications, generated embeddings")
+                logger.info(f"Extracted {len(all_clauses)} clauses, {len(classifications or [])} CUAD classifications, generated embeddings")
                 
                 return {**state, "clauses": all_clauses, "cuad_classifications": classifications}
             
@@ -97,27 +99,30 @@ def get_enhanced_pdf_processing_agent(llm):
             logger.error(f"Clause extraction failed: {e}")
             return state
     
-    # Extend base agent with new nodes
-    from langgraph.graph import StateGraph, END
-    
+    # Build the enhanced graph. (The old code called CompiledStateGraph.get_node,
+    # which does not exist, and never set an entry point.)
+    from langgraph.graph import StateGraph, START, END
+
+    should_continue = base_nodes["should_continue"]
+
+    def after_store(state: PDFProcessingState) -> str:
+        result = state.get("processing_result")
+        return "extract_sections" if getattr(result, "contract_id", None) else END
+
     builder = StateGraph(PDFProcessingState)
-    
-    # Add base nodes
-    builder.add_node("extract_text", base_agent.get_node("extract_text"))
-    builder.add_node("analyze_contract", base_agent.get_node("analyze_contract"))
-    builder.add_node("store_contract", base_agent.get_node("store_contract"))
-    
-    # Add enhanced nodes
+    builder.add_node("extract_text", base_nodes["extract_text"])
+    builder.add_node("analyze_contract", base_nodes["analyze_contract"])
+    builder.add_node("store_contract", base_nodes["store_contract"])
     builder.add_node("extract_sections", extract_sections_node)
     builder.add_node("extract_clauses", extract_clauses_node)
-    
-    # Build enhanced flow
-    builder.add_edge("extract_text", "analyze_contract")
-    builder.add_edge("analyze_contract", "store_contract")
-    builder.add_edge("store_contract", "extract_sections")
+
+    builder.add_edge(START, "extract_text")
+    builder.add_conditional_edges("extract_text", should_continue)
+    builder.add_conditional_edges("analyze_contract", should_continue)
+    builder.add_conditional_edges("store_contract", after_store)
     builder.add_edge("extract_sections", "extract_clauses")
     builder.add_edge("extract_clauses", END)
-    
+
     return builder.compile()
 
 class EnhancedPDFAgentFactory:

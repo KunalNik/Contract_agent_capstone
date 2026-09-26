@@ -1,13 +1,24 @@
 from backend.domain.entities import IContractRepository
 from backend.shared.utils.contract_search_tool import graph, embedding
 from backend.shared.utils.utils import parse_date_to_iso
-from typing import Dict, Any
+from typing import Dict, Any, Optional
+import asyncio
 import uuid
 from datetime import datetime
 import logging
 
 from backend.shared.utils.logger import get_logger
 logger = get_logger(__name__)
+
+def _to_float(value) -> Optional[float]:
+    """LLMs return amounts as numbers or strings like '$1,200,000.00'."""
+    if value is None or isinstance(value, (int, float)):
+        return value
+    try:
+        return float(str(value).replace(",", "").replace("$", "").strip())
+    except ValueError:
+        return None
+
 
 class Neo4jContractRepository(IContractRepository):
     """Repository implementation using existing Neo4j infrastructure - DRY principle"""
@@ -18,6 +29,10 @@ class Neo4jContractRepository(IContractRepository):
     
     async def get_contract_by_id(self, contract_id: str, tenant_id: str = "default-tenant") -> Dict[str, Any]:
         """Get contract data by ID - Enforces multi-tenant isolation"""
+        return await asyncio.to_thread(self.get_contract_by_id_sync, contract_id, tenant_id)
+
+    def get_contract_by_id_sync(self, contract_id: str, tenant_id: str = "default-tenant") -> Dict[str, Any]:
+        """Blocking implementation of get_contract_by_id (runs on a worker thread)."""
         try:
             query = """
             MATCH (c:Contract {file_id: $contract_id, tenant_id: $tenant_id})
@@ -55,9 +70,23 @@ class Neo4jContractRepository(IContractRepository):
             logger.error(f"Failed to get contract {contract_id}: {e}")
             return None
     
+    def find_duplicate(self, tenant_id: str, content_hash: str) -> Optional[str]:
+        """Return the id of an existing contract with identical content for this tenant."""
+        if not content_hash:
+            return None
+        rows = self.graph.query(
+            "MATCH (c:Contract {tenant_id: $tenant_id, content_hash: $content_hash}) "
+            "RETURN c.file_id AS file_id LIMIT 1",
+            {"tenant_id": tenant_id, "content_hash": content_hash},
+        )
+        return rows[0]["file_id"] if rows else None
+
     async def store_contract(self, contract_data: Dict[str, Any], tenant_id: str = "default-tenant") -> str:
         """Store contract in Neo4j with tenant isolation"""
-        
+        return await asyncio.to_thread(self.store_contract_sync, contract_data, tenant_id)
+
+    def store_contract_sync(self, contract_data: Dict[str, Any], tenant_id: str = "default-tenant") -> str:
+        """Blocking implementation of store_contract (runs on a worker thread)."""
         try:
             # Generate unique contract ID
             contract_id = f"UPLOADED_{uuid.uuid4().hex[:8].upper()}_{datetime.now().strftime('%Y%m%d')}"
@@ -93,7 +122,8 @@ class Neo4jContractRepository(IContractRepository):
                 end_date: CASE WHEN $end_date IS NOT NULL THEN date($end_date) ELSE NULL END,
                 total_amount: $total_amount,
                 embedding: $embedding,
-                tenant_id: $tenant_id,
+                original_filename: $original_filename,
+                content_hash: $content_hash,
                 upload_date: datetime(),
                 source: 'PDF_UPLOAD'
             })
@@ -109,8 +139,10 @@ class Neo4jContractRepository(IContractRepository):
                 "full_text": contract_data.get("full_text", ""),
                 "effective_date": parse_date_to_iso(contract_data.get("effective_date")),
                 "end_date": parse_date_to_iso(contract_data.get("end_date")),
-                "total_amount": contract_data.get("total_amount"),
-                "embedding": contract_embedding
+                "total_amount": _to_float(contract_data.get("total_amount")),
+                "embedding": contract_embedding,
+                "original_filename": contract_data.get("filename"),
+                "content_hash": contract_data.get("content_hash"),
             }
             
             logger.info(f"Executing Neo4j query with params: {list(contract_params.keys())}")
@@ -153,7 +185,7 @@ class Neo4jContractRepository(IContractRepository):
                 
             party_query = """
             MATCH (c:Contract {file_id: $contract_id, tenant_id: $tenant_id})
-            MERGE (p:Party {name: $party_name})
+            MERGE (p:Party {name: $party_name, tenant_id: $tenant_id})
             MERGE (p)-[:PARTY_TO {role: $role}]->(c)
             """
             

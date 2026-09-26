@@ -88,10 +88,31 @@ class LLMClauseExtractor(IClauseExtractionStrategy):
             logger.error(f"LLM clause extraction failed: {e}")
             return []
     
-    def _parse_llm_response(self, response: str, section_id: str) -> List[Clause]:
-        """Parse LLM response into Clause objects"""
-        # Simplified - would need proper JSON parsing
-        return []
+    def _parse_llm_response(self, response, section_id: str) -> List[Clause]:
+        """Parse the LLM's JSON array into Clause objects."""
+        from backend.governance.llm_judge import _extract_json
+        if isinstance(response, list):
+            response = "".join(p.get("text", "") if isinstance(p, dict) else str(p) for p in response)
+        text = response.strip()
+        try:
+            data = _extract_json(text if text.startswith(("{", "`")) else f'{{"c": {text}}}')
+        except Exception as e:
+            logger.error(f"Could not parse LLM clause output: {e}")
+            return []
+        items = data.get("c") or data.get("clauses") or [] if isinstance(data, dict) else data
+        clauses = []
+        for order, item in enumerate(items or []):
+            content = str(item.get("content", "")).strip()
+            if not content:
+                continue
+            try:
+                confidence = max(0.0, min(1.0, float(item.get("confidence", 0.7))))
+            except (TypeError, ValueError):
+                confidence = 0.7
+            clauses.append(Clause(content=content, clause_type=str(item.get("type") or "general"), order=order,
+                                  start_position=0, end_position=len(content), confidence=confidence,
+                                  section_id=section_id))
+        return clauses
 
 class ClauseExtractionHandler(ABC):
     """Chain of Responsibility handler for clause processing"""

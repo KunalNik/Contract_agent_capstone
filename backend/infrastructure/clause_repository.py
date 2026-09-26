@@ -88,13 +88,14 @@ class ClauseRepository:
         """Store individual CUAD classification"""
         query = """
         MATCH (cl:Clause {clause_id: $clause_id})
-        MATCH (ct:ClauseType {cuad_type: $cuad_type})
-        CREATE (cl)-[:CLASSIFIED_AS {
-            confidence: $confidence,
-            detected_by: $detected_by,
-            reasoning: $reasoning,
-            created_at: datetime()
-        }]->(ct)
+        // MERGE: ClauseType nodes only exist if the migration was run; MATCH
+        // silently dropped every classification otherwise
+        MERGE (ct:ClauseType {cuad_type: $cuad_type})
+        MERGE (cl)-[r:CLASSIFIED_AS]->(ct)
+        SET r.confidence = $confidence,
+            r.detected_by = $detected_by,
+            r.reasoning = $reasoning,
+            r.created_at = coalesce(r.created_at, datetime())
         """
         
         self.repository.graph.query(query, {

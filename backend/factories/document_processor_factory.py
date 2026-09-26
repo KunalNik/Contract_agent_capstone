@@ -20,129 +20,74 @@ class IDocumentProcessor(ABC):
         """Process document and return results"""
         pass
 
-class BasicDocumentProcessor(IDocumentProcessor):
+def _summarise(result: Dict[str, Any], processor_type: str) -> Dict[str, Any]:
+    """Turn the final graph state into an API result.
+
+    processing_result is a ProcessingResult dataclass (the old code called
+    .get() on it and reported "success" even when storage failed).
+    """
+    processing = result.get("processing_result")
+    status = getattr(getattr(processing, "status", None), "value", "error")
+    return {
+        "status": status,
+        "processor_type": processor_type,
+        "contract_id": getattr(processing, "contract_id", None),
+        "message": getattr(processing, "message", "") or "",
+        "error": getattr(processing, "error", None),
+        "sections_extracted": len(result.get("sections") or []),
+        "clauses_extracted": len(result.get("clauses") or []),
+        "cuad_classifications": len(result.get("cuad_classifications") or []),
+    }
+
+
+class _GraphDocumentProcessor(IDocumentProcessor):
+    processor_type = "basic"
+
+    def __init__(self, llm):
+        self.llm = llm
+        self.agent = self._create_agent(llm)
+
+    def _create_agent(self, llm):
+        return PDFAgentFactory.create_agent(llm)
+
+    async def process_document(self, file_path: str, options: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            state = {
+                "file_path": file_path,
+                "tenant_id": options.get("tenant_id", "default-tenant"),
+                "filename": options.get("filename", ""),
+                "content_hash": options.get("content_hash", ""),
+                "extracted_text": None,
+                "contract_data": None,
+                "processing_result": None,
+                "messages": [],
+            }
+            result = await self.agent.ainvoke(state)
+            return _summarise(result, self.processor_type)
+        except Exception as e:
+            logger.error(f"{self.processor_type} processing failed: {e}", exc_info=True)
+            return {"status": "error", "processor_type": self.processor_type, "error": str(e),
+                    "contract_id": None, "sections_extracted": 0, "clauses_extracted": 0,
+                    "cuad_classifications": 0}
+
+
+class BasicDocumentProcessor(_GraphDocumentProcessor):
     """Basic document processor - existing functionality"""
-    
-    def __init__(self, llm):
-        self.llm = llm
-        self.agent = PDFAgentFactory.create_agent(llm)
-    
-    async def process_document(self, file_path: str, options: Dict[str, Any]) -> Dict[str, Any]:
-        """Process document with basic extraction"""
-        try:
-            state = {
-                "file_path": file_path,
-                "tenant_id": options.get("tenant_id", "default-tenant"),
-                "filename": options.get("filename", ""),
-                "extracted_text": None,
-                "contract_data": None,
-                "processing_result": None
-            }
-            
-            result = await self.agent.ainvoke(state)
-            
-            return {
-                "status": "success",
-                "processor_type": "basic",
-                "contract_id": result.get("processing_result", {}).get("contract_id"),
-                "sections_extracted": 0,
-                "clauses_extracted": 0,
-                "cuad_classifications": 0
-            }
-            
-        except Exception as e:
-            logger.error(f"Basic processing failed: {e}")
-            return {
-                "status": "error",
-                "processor_type": "basic",
-                "error": str(e)
-            }
+    processor_type = "basic"
 
-class EnhancedDocumentProcessor(IDocumentProcessor):
+
+class EnhancedDocumentProcessor(_GraphDocumentProcessor):
     """Enhanced document processor with sections"""
-    
-    def __init__(self, llm):
-        self.llm = llm
-        self.agent = EnhancedPDFAgentFactory.create_agent(llm, "enhanced")
-    
-    async def process_document(self, file_path: str, options: Dict[str, Any]) -> Dict[str, Any]:
-        """Process document with section extraction"""
-        try:
-            state = {
-                "file_path": file_path,
-                "tenant_id": options.get("tenant_id", "default-tenant"),
-                "filename": options.get("filename", ""),
-                "extracted_text": None,
-                "contract_data": None,
-                "processing_result": None,
-                "sections": None
-            }
-            
-            result = await self.agent.ainvoke(state)
-            
-            sections = result.get("sections", [])
-            
-            return {
-                "status": "success",
-                "processor_type": "enhanced",
-                "contract_id": result.get("processing_result", {}).get("contract_id"),
-                "sections_extracted": len(sections),
-                "clauses_extracted": 0,
-                "cuad_classifications": 0
-            }
-            
-        except Exception as e:
-            logger.error(f"Enhanced processing failed: {e}")
-            return {
-                "status": "error",
-                "processor_type": "enhanced",
-                "error": str(e)
-            }
+    processor_type = "enhanced"
 
-class FullDocumentProcessor(IDocumentProcessor):
+    def _create_agent(self, llm):
+        return EnhancedPDFAgentFactory.create_agent(llm, "enhanced")
+
+
+class FullDocumentProcessor(EnhancedDocumentProcessor):
     """Full document processor with sections + clauses + CUAD"""
-    
-    def __init__(self, llm):
-        self.llm = llm
-        self.agent = EnhancedPDFAgentFactory.create_agent(llm, "enhanced")
-    
-    async def process_document(self, file_path: str, options: Dict[str, Any]) -> Dict[str, Any]:
-        """Process document with full extraction pipeline"""
-        try:
-            state = {
-                "file_path": file_path,
-                "tenant_id": options.get("tenant_id", "default-tenant"),
-                "filename": options.get("filename", ""),
-                "extracted_text": None,
-                "contract_data": None,
-                "processing_result": None,
-                "sections": None,
-                "clauses": None,
-                "cuad_classifications": None
-            }
-            
-            result = await self.agent.ainvoke(state)
-            
-            sections = result.get("sections", [])
-            clauses = result.get("clauses", [])
-            cuad_classifications = result.get("cuad_classifications", [])
-            
-            return {
-                "status": "success",
-                "processor_type": "full",
-                "contract_id": result.get("processing_result", {}).get("contract_id"),
-                "sections_extracted": len(sections),
-                "clauses_extracted": len(clauses),
-                "cuad_classifications": len(cuad_classifications)
-            }
-            
-        except Exception as e:
-            logger.error(f"Full processing failed: {e}")
-            return {
-                "status": "error",
-                "processor_type": "full",
-                "error": str(e)
-            }
+    processor_type = "full"
+
 
 class DocumentProcessorFactory:
     """Factory for creating document processors"""

@@ -41,7 +41,7 @@ class EnterpriseSchemaMigration:
         queries = [
             # Add tenant nodes and relationships
             """
-            MERGE (t:Tenant {tenant_id: 'demo_tenant_1'})
+            MERGE (t:Tenant {tenant_id: 'default-tenant'})
             SET t.name = 'Demo Law Firm',
                 t.created_at = datetime(),
                 t.status = 'active'
@@ -58,7 +58,7 @@ class EnterpriseSchemaMigration:
             """
             MATCH (c:Contract)
             WHERE c.tenant_id IS NULL
-            SET c.tenant_id = 'demo_tenant_1'
+            SET c.tenant_id = 'default-tenant'
             """,
             
             # Create tenant constraint
@@ -79,7 +79,7 @@ class EnterpriseSchemaMigration:
             """
             MERGE (cv:ContractVersion {version_id: 'sample_version'})
             SET cv.contract_id = 'sample_contract',
-                cv.tenant_id = 'demo_tenant_1',
+                cv.tenant_id = 'default-tenant',
                 cv.version_number = 1,
                 cv.changes_summary = 'Initial version',
                 cv.created_at = datetime(),
@@ -119,7 +119,7 @@ class EnterpriseSchemaMigration:
             """
             MERGE (dc:DocumentChunk {chunk_id: 'sample_chunk'})
             SET dc.contract_id = 'sample_contract',
-                dc.tenant_id = 'demo_tenant_1',
+                dc.tenant_id = 'default-tenant',
                 dc.chunk_order = 1,
                 dc.chunk_size = 1024,
                 dc.chunk_type = 'paragraph',
@@ -153,7 +153,7 @@ class EnterpriseSchemaMigration:
             """
             MERGE (de:DocumentEmbedding {embedding_id: 'sample_embedding'})
             SET de.chunk_id = 'sample_chunk',
-                de.tenant_id = 'demo_tenant_1',
+                de.tenant_id = 'default-tenant',
                 de.model_name = 'gemini-embedding-001',
                 de.vector_dimensions = 1536,
                 de.created_at = datetime()
@@ -184,7 +184,7 @@ class EnterpriseSchemaMigration:
             """
             MERGE (pl:ProcessingLineage {lineage_id: 'sample_lineage'})
             SET pl.contract_id = 'sample_contract',
-                pl.tenant_id = 'demo_tenant_1',
+                pl.tenant_id = 'default-tenant',
                 pl.processing_step = 'chunk',
                 pl.input_data_id = 'contract_upload',
                 pl.output_data_id = 'document_chunks',
@@ -219,7 +219,7 @@ class EnterpriseSchemaMigration:
             """
             MERGE (ca:ContractAnalysis {analysis_id: 'sample_analysis'})
             SET ca.contract_id = 'sample_contract',
-                ca.tenant_id = 'demo_tenant_1',
+                ca.tenant_id = 'default-tenant',
                 ca.analysis_type = 'clause_extraction',
                 ca.results = '{"clauses": [], "confidence": 0.9}',
                 ca.confidence_score = 0.9,

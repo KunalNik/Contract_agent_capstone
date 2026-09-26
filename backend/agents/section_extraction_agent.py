@@ -38,11 +38,12 @@ class RegexSectionExtractor(ISectionExtractionStrategy):
         """Extract sections using regex patterns"""
         sections = []
         
-        # Common section patterns
+        # Common section patterns. Case-sensitive on purpose: with IGNORECASE
+        # the ALL-CAPS rule matched every short line ("the parties agree").
         patterns = [
-            r'^\s*(\d+\.?\s+[A-Z][^.\n]{10,50})\s*$',  # Numbered sections
-            r'^\s*([A-Z][A-Z\s]{5,30})\s*$',           # ALL CAPS sections
-            r'^\s*(ARTICLE\s+[IVX\d]+[^.\n]{5,30})\s*$' # Article sections
+            re.compile(r'^\s*(\d+(\.\d+)*\.?\s+[A-Z][^\n]{2,80})\s*$'),   # "1. Payment Terms"
+            re.compile(r'^\s*([A-Z][A-Z0-9&,\-\s]{4,60})\s*$'),              # "PAYMENT TERMS"
+            re.compile(r'^\s*((ARTICLE|Article|SECTION|Section)\s+[IVXLC\d]+\b[^\n]{0,60})\s*$'),
         ]
         
         lines = text.split('\n')
@@ -53,8 +54,10 @@ class RegexSectionExtractor(ISectionExtractionStrategy):
         for line in lines:
             is_section_header = False
             
+            stripped = line.strip()
             for pattern in patterns:
-                if re.match(pattern, line.strip(), re.IGNORECASE):
+                # Headings are short; long numbered lines are clauses, not headers
+                if len(stripped) <= 90 and pattern.match(stripped):
                     # Save previous section
                     if current_section:
                         sections.append(Section(
@@ -87,6 +90,15 @@ class RegexSectionExtractor(ISectionExtractionStrategy):
                 confidence=0.8
             ))
         
+        # Fill in character offsets (previously always 0)
+        cursor = 0
+        for section in sections:
+            start = text.find(section.title, cursor)
+            if start == -1:
+                continue
+            section.start_position = start
+            section.end_position = start + len(section.title) + len(section.content) + 1
+            cursor = start + len(section.title)
         return sections
 
 class LLMSectionExtractor(ISectionExtractionStrategy):
@@ -119,10 +131,37 @@ class LLMSectionExtractor(ISectionExtractionStrategy):
             logger.error(f"LLM section extraction failed: {e}")
             return []
     
-    def _parse_llm_response(self, response: str, full_text: str) -> List[Section]:
-        """Parse LLM response and map to actual text sections"""
-        # Simplified implementation - would need proper JSON parsing
-        return []
+    def _parse_llm_response(self, response, full_text: str) -> List[Section]:
+        """Parse the LLM's JSON list and slice the real text between section markers."""
+        from backend.governance.llm_judge import _extract_json
+        if isinstance(response, list):
+            response = "".join(p.get("text", "") if isinstance(p, dict) else str(p) for p in response)
+        try:
+            data = _extract_json(response if response.strip().startswith(("{", "`")) else f'{{"s": {response}}}')
+        except Exception as e:
+            logger.error(f"Could not parse LLM section output: {e}")
+            return []
+        items = data.get("s") or data.get("sections") or [] if isinstance(data, dict) else data
+        located = []
+        for item in items or []:
+            marker = str(item.get("start_marker") or item.get("title") or "").strip()
+            pos = full_text.find(marker[:60]) if marker else -1
+            if pos != -1:
+                located.append((pos, item))
+        located.sort(key=lambda x: x[0])
+        sections = []
+        for order, (pos, item) in enumerate(located):
+            end = located[order + 1][0] if order + 1 < len(located) else len(full_text)
+            sections.append(Section(
+                title=str(item.get("title") or marker)[:200],
+                content=full_text[pos:end].strip(),
+                order=order,
+                start_position=pos,
+                end_position=end,
+                section_type=str(item.get("type") or "general"),
+                confidence=0.85,
+            ))
+        return sections
 
 class HybridSectionExtractor(ISectionExtractionStrategy):
     """Hybrid approach combining regex and LLM"""

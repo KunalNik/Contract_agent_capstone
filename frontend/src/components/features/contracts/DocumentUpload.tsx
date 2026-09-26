@@ -64,9 +64,9 @@ export const DocumentUpload: React.FC<DocumentUploadProps> = ({
     try {
       const formData = new FormData();
       formData.append('file', file);
-      formData.append('model', modelSelection);
 
-      const response = await fetch('/api/documents/upload', {
+      // The backend reads the model from the query string (a form field was ignored)
+      const response = await fetch(`/api/documents/upload?model=${encodeURIComponent(modelSelection)}`, {
         method: 'POST',
         body: formData
       });

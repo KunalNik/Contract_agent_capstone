@@ -40,7 +40,7 @@ class ErrorContext:
         operation: str,
         resource_id: Optional[str] = None,
         user_id: Optional[str] = "system",
-        tenant_id: Optional[str] = "demo_tenant_1",
+        tenant_id: Optional[str] = "default-tenant",
         metadata: Optional[Dict[str, Any]] = None
     ):
         self.operation = operation
@@ -181,7 +181,7 @@ def error_tracking_context(
     severity: ErrorSeverity = ErrorSeverity.MEDIUM,
     resource_id: Optional[str] = None,
     user_id: Optional[str] = "system",
-    tenant_id: Optional[str] = "demo_tenant_1",
+    tenant_id: Optional[str] = "default-tenant",
     metadata: Optional[Dict[str, Any]] = None,
     raise_on_error: bool = True
 ):
