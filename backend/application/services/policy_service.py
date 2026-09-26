@@ -25,11 +25,9 @@ class PolicyService:
             # Step 1: Validate policy
             validation_result = self.validation_service.validate_policy_upload(policy_data)
             if not validation_result.passed:
-                self.audit_service.error_tracker.track_error(
-                    error_type="policy_validation_error",
-                    error_message=validation_result.message,
-                    context=policy_data
-                )
+                self.audit_service.track_error(
+                    ValueError(validation_result.message), "policy_validation",
+                    tenant_id=policy_data.get('tenant_id'), resource_id=policy_data.get('policy_name'))
                 return {
                     'success': False,
                     'error': validation_result.message,
@@ -63,9 +61,13 @@ class PolicyService:
             # Step 4: Invalidate cache
             self.cache_service.invalidate_policy_cache(policy_data['tenant_id'], policy_id)
             
+            rules_extracted = processing_result.get('rules_extracted', 0)
             return {
                 'success': True,
                 'policy_id': policy_id,
+                'rules_extracted': rules_extracted,
+                'warnings': [] if rules_extracted else [
+                    'No enforceable rules were recognised; check the policy uses words like shall/must/prohibited'],
                 'validation_score': validation_result.score,
                 'workflow_id': processing_result['workflow_id'],
                 'processing_steps': len(processing_result['steps']),
@@ -73,11 +75,9 @@ class PolicyService:
             }
             
         except Exception as e:
-            self.audit_service.error_tracker.track_error(
-                error_type="policy_service_error",
-                error_message=str(e),
-                context=policy_data
-            )
+            self.audit_service.track_error(
+                e, "policy_service", tenant_id=policy_data.get('tenant_id'),
+                resource_id=policy_data.get('policy_name'))
             return {
                 'success': False,
                 'error': str(e)
@@ -86,32 +86,20 @@ class PolicyService:
     def get_tenant_policies(self, tenant_id: str, use_cache: bool = True) -> Dict[str, Any]:
         """Get all policies for a tenant with caching."""
         try:
-            policies = []
             source = 'database'
-            
-            # Try cache first if enabled
-            if use_cache:
-                try:
-                    cached_result = self.cache_service.get_cached_policy_document(f"tenant_{tenant_id}")
-                    if cached_result:
-                        policies = cached_result if isinstance(cached_result, list) else [cached_result]
-                        source = 'cache'
-                except:
-                    pass  # Fall through to database
-            
-            # Get from database if not cached
-            if not policies:
-                policy_entities = self.repository.get_policies_by_tenant(tenant_id)
-                policies = [
-                    {
-                        'id': policy.id,
-                        'name': policy.name,
-                        'version': policy.version,
-                        'rules_count': len(policy.rules),
-                        'created_at': policy.created_at.isoformat() if policy.created_at else None
-                    }
-                    for policy in policy_entities
-                ]
+            # (The old "cache" lookup fetched a policy whose id was "tenant_<id>",
+            # which never exists; list straight from the repository.)
+            policy_entities = self.repository.get_policies_by_tenant(tenant_id)
+            policies = [
+                {
+                    'id': policy.id,
+                    'name': policy.name,
+                    'version': policy.version,
+                    'rules_count': len(policy.rules),
+                    'created_at': str(policy.created_at) if policy.created_at else None
+                }
+                for policy in policy_entities
+            ]
             
             # Log search
             self.audit_service.log_policy_search(tenant_id, f"tenant_policies:{tenant_id}", len(policies))
@@ -209,8 +197,8 @@ class PolicyService:
     def _check_clause_against_policies(self, clause: Dict[str, Any], policies: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Check single clause against applicable policies."""
         violations = []
-        clause_content = clause.get('content', '').lower()
-        clause_type = clause.get('type', 'general')
+        from backend.agents.patterns.chain_of_thought_agent import _clause_type, _normalise_type
+        clause_type = _normalise_type(_clause_type(clause))
         
         for policy in policies:
             if clause_type not in policy['applies_to'] and 'general' not in policy['applies_to']:

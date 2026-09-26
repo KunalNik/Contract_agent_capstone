@@ -59,7 +59,8 @@ class ChainOfThoughtAgent(BasePatternAgent):
         self.thought_chain = []  # agents are reused; don't carry steps across calls
         task_type = context.get('task_type', 'risk_assessment')
         
-        if task_type == 'risk_assessment':
+        # 'analysis' is the API's default task type ("general analysis")
+        if task_type in ('risk_assessment', 'analysis'):
             return await self._risk_assessment_chain(context)
         elif task_type == 'clause_analysis':
             return await self._clause_analysis_chain(context)

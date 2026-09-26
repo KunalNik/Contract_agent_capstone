@@ -3,6 +3,7 @@ from typing import Any, List, Dict
 from backend.domain.search_entities import SearchParams, SearchResult
 from backend.shared.utils.contract_search_tool import graph, embedding
 from backend.shared.utils.utils import convert_neo4j_date
+from backend.shared.utils.request_context import current_tenant
 
 class SearchStrategy(ABC):
     """Abstract base class for search strategies (Strategy Pattern)"""
@@ -16,8 +17,8 @@ class DocumentSearchStrategy(SearchStrategy):
     
     def execute(self, params: SearchParams) -> SearchResult:
         try:
-            cypher_params = {}
-            filters = []
+            cypher_params = {"tenant_id": current_tenant()}
+            filters = ["c.tenant_id = $tenant_id"]
             
             cypher_statement = "MATCH (c:Contract) "
             
@@ -88,17 +89,20 @@ class DocumentSearchStrategy(SearchStrategy):
             return SearchResult(total_count=0, items=[], search_metadata={"search_level": "document"})
             
         except Exception as e:
-            return SearchResult(total_count=0, items=[], search_metadata={"search_level": "document", "error": str(e)})
+            # Report failures instead of disguising them as "no contracts found"
+            raise RuntimeError(f"document search failed: {e}") from e
 
 class ClauseSearchStrategy(SearchStrategy):
     """Clause-level search implementation"""
     
     def execute(self, params: SearchParams) -> SearchResult:
         try:
-            cypher_params = {}
-            filters = []
+            cypher_params = {"tenant_id": current_tenant()}
+            filters = ["c.tenant_id = $tenant_id"]
             
-            cypher_statement = "MATCH (c:Contract)-[:CONTAINS_CLAUSE]->(cl:Clause) "
+            # Clauses are linked directly (embedding pipeline) or via a section
+            # (section/clause extraction); the old pattern missed the latter
+            cypher_statement = "MATCH (c:Contract)-[:HAS_SECTION|CONTAINS_CLAUSE*1..2]->(cl:Clause) "
             
             if params.clause_types:
                 filters.append("cl.clause_type IN $clause_types")
@@ -146,15 +150,16 @@ class ClauseSearchStrategy(SearchStrategy):
             return SearchResult(total_count=0, items=[], search_metadata={"search_level": "clause"})
             
         except Exception as e:
-            return SearchResult(total_count=0, items=[], search_metadata={"search_level": "clause", "error": str(e)})
+            # Report failures instead of disguising them as "no contracts found"
+            raise RuntimeError(f"clause search failed: {e}") from e
 
 class SectionSearchStrategy(SearchStrategy):
     """Section-level search implementation"""
     
     def execute(self, params: SearchParams) -> SearchResult:
         try:
-            cypher_params = {}
-            filters = []
+            cypher_params = {"tenant_id": current_tenant()}
+            filters = ["c.tenant_id = $tenant_id"]
             
             cypher_statement = "MATCH (c:Contract)-[:HAS_SECTION]->(s:Section) "
             
@@ -204,15 +209,16 @@ class SectionSearchStrategy(SearchStrategy):
             return SearchResult(total_count=0, items=[], search_metadata={"search_level": "section"})
             
         except Exception as e:
-            return SearchResult(total_count=0, items=[], search_metadata={"search_level": "section", "error": str(e)})
+            # Report failures instead of disguising them as "no contracts found"
+            raise RuntimeError(f"section search failed: {e}") from e
 
 class RelationshipSearchStrategy(SearchStrategy):
     """Relationship-level search implementation"""
     
     def execute(self, params: SearchParams) -> SearchResult:
         try:
-            cypher_params = {}
-            filters = []
+            cypher_params = {"tenant_id": current_tenant()}
+            filters = ["c.tenant_id = $tenant_id"]
             
             cypher_statement = "MATCH (c:Contract)<-[r:PARTY_TO]-(p:Party) "
             
@@ -259,4 +265,5 @@ class RelationshipSearchStrategy(SearchStrategy):
             return SearchResult(total_count=0, items=[], search_metadata={"search_level": "relationship"})
             
         except Exception as e:
-            return SearchResult(total_count=0, items=[], search_metadata={"search_level": "relationship", "error": str(e)})
+            # Report failures instead of disguising them as "no contracts found"
+            raise RuntimeError(f"relationship search failed: {e}") from e

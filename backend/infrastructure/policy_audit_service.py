@@ -50,85 +50,67 @@ class PolicyAuditService:
             error_details=processing_result.get('error') if not success else None
         )
     
-    def log_policy_compliance_check(self, tenant_id: str, contract_id: str, 
+    def log_policy_compliance_check(self, tenant_id: str, contract_id: str,
                                   compliance_result: Dict[str, Any]) -> None:
         """Log policy compliance checking."""
-        event = AuditEvent(
-            event_type="policy_compliance_check",
+        self.audit_logger.log_event(
+            event_type=AuditEventType.ANALYSIS_REQUEST,
+            resource_id=contract_id or "unknown",
+            action="policy_compliance_check",
             tenant_id=tenant_id,
-            user_id="system",
-            resource_id=contract_id,
-            resource_type="contract",
-            action="compliance_check",
-            details={
+            metadata={
                 "violations_found": compliance_result.get('violations_found', 0),
                 "policies_checked": compliance_result.get('policies_checked', 0),
-                "violations": compliance_result.get('violations', []),
                 "compliance_score": self._calculate_compliance_score(compliance_result)
             },
-            success=True
         )
-        
-        self.audit_logger.log_event(event)
-    
+
     def log_policy_search(self, tenant_id: str, query: str, results_count: int,
                          user_id: str = None) -> None:
         """Log policy search activities."""
-        event = AuditEvent(
-            event_type="policy_search",
-            tenant_id=tenant_id,
+        self.audit_logger.log_event(
+            event_type=AuditEventType.SEARCH_QUERY,
+            resource_id=f"policy_search:{tenant_id}",
+            action="policy_search",
             user_id=user_id or "system",
-            resource_id=None,
-            resource_type="policy_search",
-            action="search",
-            details={
-                "search_query": query,
-                "results_count": results_count,
-                "search_type": "semantic"
-            },
-            success=True
+            tenant_id=tenant_id,
+            metadata={"search_query": query[:200], "results_count": results_count, "search_type": "semantic"},
         )
-        
-        self.audit_logger.log_event(event)
-    
+
     def log_policy_update(self, tenant_id: str, policy_id: str, old_version: str,
                          new_version: str, user_id: str = None) -> None:
         """Log policy updates and versioning."""
-        event = AuditEvent(
-            event_type="policy_update",
-            tenant_id=tenant_id,
-            user_id=user_id or "system",
+        self.audit_logger.log_event(
+            event_type=AuditEventType.DOCUMENT_UPDATE,
             resource_id=policy_id,
-            resource_type="policy_document",
-            action="update",
-            details={
-                "old_version": old_version,
-                "new_version": new_version,
-                "update_type": "version_update"
-            },
-            success=True
+            action="policy_update",
+            user_id=user_id or "system",
+            tenant_id=tenant_id,
+            metadata={"old_version": old_version, "new_version": new_version},
         )
-        
-        self.audit_logger.log_event(event)
-    
+
     def log_policy_deletion(self, tenant_id: str, policy_id: str, policy_name: str,
                           user_id: str = None) -> None:
         """Log policy deletion (soft delete)."""
-        event = AuditEvent(
-            event_type="policy_deletion",
-            tenant_id=tenant_id,
-            user_id=user_id or "system",
+        self.audit_logger.log_event(
+            event_type=AuditEventType.DOCUMENT_DELETE,
             resource_id=policy_id,
-            resource_type="policy_document",
-            action="delete",
-            details={
-                "policy_name": policy_name,
-                "deletion_type": "soft_delete"
-            },
-            success=True
+            action="policy_deletion",
+            user_id=user_id or "system",
+            tenant_id=tenant_id,
+            metadata={"policy_name": policy_name, "deletion_type": "soft_delete"},
         )
-        
-        self.audit_logger.log_event(event)
+
+    def track_error(self, error: Exception, operation: str, tenant_id: str = None,
+                    resource_id: str = None) -> str:
+        """Record an error with the shared ErrorTracker (correct signature)."""
+        from backend.infrastructure.error_tracker import ErrorContext, ErrorSeverity
+        return self.error_tracker.track_error(
+            error=error,
+            category=ErrorCategory.VALIDATION_ERROR if "validation" in operation else ErrorCategory.PROCESSING_ERROR,
+            severity=ErrorSeverity.MEDIUM,
+            context=ErrorContext(operation=operation, resource_id=resource_id, tenant_id=tenant_id or "default-tenant"),
+        )
     
     def _calculate_compliance_score(self, compliance_result: Dict[str, Any]) -> float:
         """Calculate compliance score based on violations."""

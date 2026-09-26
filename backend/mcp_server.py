@@ -52,7 +52,7 @@ async def search_clause_library(query: str, tenant_id: str) -> str:
             "success": True,
             "results_count": len(results),
             "clauses": results
-        })
+        }, default=str)
     except Exception as e:
         return json.dumps({"success": False, "error": str(e)})
 
@@ -119,14 +119,16 @@ async def fetch_contract_metadata(contract_id: str, tenant_id: str) -> str:
         tenant_id: Mandatory tenant identifier for data isolation.
     """
     try:
-        metadata = get_contract_repo().get_contract_by_id(contract_id, tenant_id=tenant_id)
+        # get_contract_by_id is async; it was called without await, so every
+        # call failed with "Object of type coroutine is not JSON serializable"
+        metadata = await get_contract_repo().get_contract_by_id(contract_id, tenant_id=tenant_id)
         if not metadata:
             return json.dumps({"success": False, "error": f"Contract {contract_id} not found for tenant {tenant_id}"})
             
         return json.dumps({
             "success": True,
             "metadata": metadata
-        })
+        }, default=str)
     except Exception as e:
         return json.dumps({"success": False, "error": str(e)})
 

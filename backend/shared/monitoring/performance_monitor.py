@@ -94,34 +94,47 @@ class PerformanceMonitor:
 monitor = PerformanceMonitor()
 
 def track_performance(operation: str):
-    """Decorator to track function performance"""
+    """Decorator to track function performance (sync and async functions).
+
+    The old sync-only wrapper timed coroutine *creation* (~0 ms) and always
+    recorded success for async functions.
+    """
+    import asyncio as _asyncio
+
+    def record(func, start_time, success, error_message):
+        monitor.record_metric(PerformanceMetric(
+            operation=operation,
+            duration_ms=(time.time() - start_time) * 1000,
+            timestamp=datetime.now(),
+            success=success,
+            error_message=error_message,
+            metadata={"function": func.__name__}
+        ))
+
     def decorator(func):
+        if _asyncio.iscoroutinefunction(func):
+            @wraps(func)
+            async def async_wrapper(*args, **kwargs):
+                start_time = time.time()
+                try:
+                    result = await func(*args, **kwargs)
+                except Exception as e:
+                    record(func, start_time, False, str(e))
+                    raise
+                record(func, start_time, True, None)
+                return result
+            return async_wrapper
+
         @wraps(func)
         def wrapper(*args, **kwargs):
             start_time = time.time()
-            success = True
-            error_message = None
-            
             try:
                 result = func(*args, **kwargs)
-                return result
             except Exception as e:
-                success = False
-                error_message = str(e)
+                record(func, start_time, False, str(e))
                 raise
-            finally:
-                duration_ms = (time.time() - start_time) * 1000
-                
-                metric = PerformanceMetric(
-                    operation=operation,
-                    duration_ms=duration_ms,
-                    timestamp=datetime.now(),
-                    success=success,
-                    error_message=error_message,
-                    metadata={"function": func.__name__}
-                )
-                
-                monitor.record_metric(metric)
-        
+            record(func, start_time, True, None)
+            return result
+
         return wrapper
     return decorator

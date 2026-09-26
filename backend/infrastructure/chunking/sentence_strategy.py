@@ -3,8 +3,17 @@ from .base_strategy import IChunkingStrategy, ChunkResult
 from typing import List, Dict, Any
 
 class SentenceAdaptiveStrategy(IChunkingStrategy):
-    def __init__(self, base_size: int = 1000):
+    def __init__(self, base_size: int = 1000, max_chunk_size: int = None, min_chunk_size: int = None, **kwargs):
+        # Other strategies (and HybridStrategy/ChunkingAgent) pass
+        # (min_chunk_size, max_chunk_size); accepting only base_size made the
+        # hybrid/"auto" strategy crash on construction.
+        if isinstance(max_chunk_size, int):
+            base_size = max_chunk_size
+        elif isinstance(min_chunk_size, int) and min_chunk_size > base_size:
+            base_size = min_chunk_size
         self.base_size = base_size
+        self.min_chunk_size = min_chunk_size or base_size // 2
+        self.max_chunk_size = base_size
     
     def chunk_document(self, content: str, metadata: Dict[str, Any]) -> List[ChunkResult]:
         # Adaptive overlap: 50% large docs, 20% small docs

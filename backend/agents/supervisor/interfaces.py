@@ -80,7 +80,7 @@ class IAgentRegistry(ABC):
 
 class IWorkflowEngine(ABC):
     @abstractmethod
-    def create_workflow(self, workflow_type: str) -> 'Workflow':
+    def create_workflow(self, workflow_type: str) -> Any:
         pass
 
 class IQualityManager(ABC):

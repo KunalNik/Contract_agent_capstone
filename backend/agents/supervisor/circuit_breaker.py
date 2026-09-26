@@ -67,7 +67,8 @@ class CircuitBreaker:
         if not self.last_failure_time:
             return False
         
-        return (datetime.now() - self.last_failure_time).seconds >= self.config.recovery_timeout
+        # total_seconds(): .seconds ignores whole days and wraps every 24h
+        return (datetime.now() - self.last_failure_time).total_seconds() >= self.config.recovery_timeout
     
     def _reset(self):
         """Reset circuit breaker to normal operation"""

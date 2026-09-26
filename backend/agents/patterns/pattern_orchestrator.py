@@ -22,8 +22,8 @@ class PatternOrchestrator(IAgent):
     
     def execute(self, context: AgentContext) -> AgentResult:
         """Execute method required by IAgent interface."""
-        import asyncio
-        result = asyncio.run(self.process(context.input_data))
+        from backend.shared.utils.async_utils import run_coro_sync
+        result = run_coro_sync(self.process(context.input_data))
         return AgentResult(
             status='success' if result.get('success') else 'error',
             data=result,
@@ -60,25 +60,33 @@ class PatternOrchestrator(IAgent):
             # Synthesize results
             final_result = await self._synthesize_results(results, context)
             
+            succeeded = [name for name, r in results.items() if isinstance(r, dict) and r.get('success')]
             return {
-                'success': True,
+                'success': bool(succeeded),
+                'error': None if succeeded else '; '.join(
+                    f"{name}: {r.get('error', 'failed')}" for name, r in results.items() if isinstance(r, dict)),
                 'patterns_used': use_patterns,
+                'patterns_succeeded': succeeded,
                 'individual_results': results,
                 'synthesized_result': final_result
             }
             
         except Exception as e:
-            logger.error(f"Pattern orchestrator error: {e}")
-            return {'error': str(e)}
+            logger.error(f"Pattern orchestrator error: {e}", exc_info=True)
+            return {'success': False, 'error': str(e)}
     
     async def _execute_react_pattern(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """Execute ReACT pattern for iterative analysis."""
         react_context = {
             'query': context.get('query', ''),
-            'contract_text': context.get('contract_text', '')
+            'contract_text': context.get('contract_text', ''),
+            'contract_id': context.get('contract_id') or 'unknown',
         }
+        if context.get('max_iterations'):
+            self.react_agent.max_iterations = int(context['max_iterations'])
         
-        return await self.react_agent.process(react_context)
+        # BasePatternAgent exposes execute(); process() never existed
+        return await self.react_agent.execute(react_context)
     
     async def _execute_cot_pattern(self, context: Dict[str, Any], 
                                  react_result: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -88,7 +96,8 @@ class PatternOrchestrator(IAgent):
             'clauses': context.get('clauses', []),
             'policies': context.get('policies', {}),
             'contract_text': context.get('contract_text', ''),
-            'target_clause': context.get('target_clause', context.get('query', ''))
+            'target_clause': context.get('target_clause') or context.get('query', ''),
+            'contract_id': context.get('contract_id') or 'unknown',
         }
         
         # Incorporate ReACT findings if available
@@ -96,7 +105,7 @@ class PatternOrchestrator(IAgent):
             findings = react_result.get('findings', [])
             cot_context['react_findings'] = findings
         
-        return await self.cot_agent.process(cot_context)
+        return await self.cot_agent.execute(cot_context)
     
     async def _execute_rag_pattern(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """Execute Advanced RAG pattern for contextual analysis."""

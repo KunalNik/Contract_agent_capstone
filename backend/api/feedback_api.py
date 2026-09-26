@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends, Request
-from backend.governance.rbac import Permission, requires_permission
-from pydantic import BaseModel
+from backend.governance.rbac import Permission, requires_permission, get_current_tenant
+from typing import Literal
+from pydantic import BaseModel, Field
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 import uuid
@@ -17,10 +18,10 @@ class LegalDecisionRequest(BaseModel):
     clause_id: str
     clause_type: str
     original_analysis: Dict[str, Any]
-    legal_decision: str  # "approved", "rejected", "modified"
+    legal_decision: Literal["approved", "rejected", "modified"]
     legal_feedback: str
     risk_assessment_override: Optional[str] = None
-    confidence_score: Optional[float] = 0.0
+    confidence_score: Optional[float] = Field(0.0, ge=0.0, le=1.0)
 
 class FeedbackResponse(BaseModel):
     decision_id: str
@@ -28,7 +29,7 @@ class FeedbackResponse(BaseModel):
     message: str
 
 @router.post("/legal-decision", response_model=FeedbackResponse, dependencies=[Depends(requires_permission(Permission.ANALYZE))])
-async def submit_legal_decision(request: LegalDecisionRequest):
+async def submit_legal_decision(request: LegalDecisionRequest, tenant_id: str = Depends(get_current_tenant)):
     """Submit legal team decision for learning"""
     try:
         # Create legal decision
@@ -42,10 +43,11 @@ async def submit_legal_decision(request: LegalDecisionRequest):
             legal_feedback=request.legal_feedback,
             risk_assessment_override=request.risk_assessment_override,
             confidence_score=request.confidence_score or 0.0,
-            decision_timestamp=datetime.now()
+            decision_timestamp=datetime.now(),
+            tenant_id=tenant_id
         )
         
-        # Store decision
+        # Store decision (raises if the contract is not the caller's or the write fails)
         collector = FeedbackCollector()
         collector.collect_decision(decision)
         
@@ -57,26 +59,28 @@ async def submit_legal_decision(request: LegalDecisionRequest):
             message="Legal decision recorded successfully"
         )
         
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.error(f"Failed to submit legal decision: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to record decision: {str(e)}")
 
 @router.get("/decisions/{contract_id}", dependencies=[Depends(requires_permission(Permission.VIEW_REPORTS))])
-async def get_contract_decisions(contract_id: str):
+async def get_contract_decisions(contract_id: str, tenant_id: str = Depends(get_current_tenant)):
     """Get all legal decisions for a contract"""
     try:
         collector = FeedbackCollector()
         
         # Query decisions for contract
         query = """
-        MATCH (c:Contract {file_id: $contract_id})-[:HAS_DECISION]->(d:LegalDecision)
+        MATCH (c:Contract {file_id: $contract_id, tenant_id: $tenant_id})-[:HAS_DECISION]->(d:LegalDecision)
         RETURN d
         ORDER BY d.decision_timestamp DESC
         """
         
         from backend.infrastructure.contract_repository import Neo4jContractRepository
         repository = Neo4jContractRepository()
-        results = repository.graph.query(query, {"contract_id": contract_id})
+        results = repository.graph.query(query, {"contract_id": contract_id, "tenant_id": tenant_id})
         
         decisions = []
         for result in results:
@@ -103,10 +107,10 @@ async def get_contract_decisions(contract_id: str):
         raise HTTPException(status_code=500, detail=f"Failed to retrieve decisions: {str(e)}")
 
 @router.get("/patterns/{clause_type}", dependencies=[Depends(requires_permission(Permission.VIEW_REPORTS))])
-async def get_learned_patterns(clause_type: str):
+async def get_learned_patterns(clause_type: str, tenant_id: str = Depends(get_current_tenant)):
     """Get learned patterns for a clause type"""
     try:
-        analyzer = AdaptiveAnalyzer()
+        analyzer = AdaptiveAnalyzer(tenant_id=tenant_id)
         analyzer.load_patterns_for_clause_type(clause_type)
         
         patterns = analyzer.active_patterns.get(clause_type, [])
@@ -134,10 +138,10 @@ async def get_learned_patterns(clause_type: str):
         raise HTTPException(status_code=500, detail=f"Failed to retrieve patterns: {str(e)}")
 
 @router.post("/retrain/{clause_type}", dependencies=[Depends(requires_permission(Permission.MANAGE_POLICIES))])
-async def retrain_patterns(clause_type: str):
+async def retrain_patterns(clause_type: str, tenant_id: str = Depends(get_current_tenant)):
     """Retrain patterns for a specific clause type"""
     try:
-        analyzer = AdaptiveAnalyzer()
+        analyzer = AdaptiveAnalyzer(tenant_id=tenant_id)
         patterns = analyzer.pattern_learner.learn_from_decisions(clause_type)
         
         return {
@@ -158,7 +162,7 @@ async def retrain_patterns(clause_type: str):
         raise HTTPException(status_code=500, detail=f"Retraining failed: {str(e)}")
 
 @router.get("/analytics/dashboard", dependencies=[Depends(requires_permission(Permission.VIEW_REPORTS))])
-async def get_feedback_analytics():
+async def get_feedback_analytics(tenant_id: str = Depends(get_current_tenant)):
     """Get feedback analytics for dashboard"""
     try:
         from backend.infrastructure.contract_repository import Neo4jContractRepository
@@ -166,7 +170,7 @@ async def get_feedback_analytics():
         
         # Get feedback statistics
         query = """
-        MATCH (d:LegalDecision)
+        MATCH (d:LegalDecision {tenant_id: $tenant_id})
         RETURN 
             count(d) as total_decisions,
             sum(CASE WHEN d.legal_decision = 'approved' THEN 1 ELSE 0 END) as approved_count,
@@ -176,22 +180,23 @@ async def get_feedback_analytics():
             collect(DISTINCT d.clause_type) as clause_types
         """
         
-        result = repository.graph.query(query)
+        result = repository.graph.query(query, {"tenant_id": tenant_id})
         
         if result:
             stats = result[0]
+            total = stats.get("total_decisions") or 0
+            approved = stats.get("approved_count") or 0
+            # avg() is NULL when there are no decisions (round(None) used to 500)
             return {
-                "total_decisions": stats.get("total_decisions", 0),
+                "total_decisions": total,
                 "decision_breakdown": {
-                    "approved": stats.get("approved_count", 0),
-                    "rejected": stats.get("rejected_count", 0),
-                    "modified": stats.get("modified_count", 0)
+                    "approved": approved,
+                    "rejected": stats.get("rejected_count") or 0,
+                    "modified": stats.get("modified_count") or 0
                 },
-                "average_confidence": round(stats.get("avg_confidence", 0.0), 2),
-                "active_clause_types": stats.get("clause_types", []),
-                "approval_rate": round(
-                    stats.get("approved_count", 0) / max(stats.get("total_decisions", 1), 1) * 100, 1
-                )
+                "average_confidence": round(stats.get("avg_confidence") or 0.0, 2),
+                "active_clause_types": stats.get("clause_types") or [],
+                "approval_rate": round(approved / max(total, 1) * 100, 1)
             }
         else:
             return {
@@ -207,7 +212,7 @@ async def get_feedback_analytics():
         raise HTTPException(status_code=500, detail=f"Analytics failed: {str(e)}")
 
 @router.post("/bulk-feedback", dependencies=[Depends(requires_permission(Permission.ANALYZE))])
-async def submit_bulk_feedback(decisions: List[LegalDecisionRequest]):
+async def submit_bulk_feedback(decisions: List[LegalDecisionRequest], tenant_id: str = Depends(get_current_tenant)):
     """Submit multiple legal decisions at once"""
     try:
         collector = FeedbackCollector()
@@ -224,7 +229,8 @@ async def submit_bulk_feedback(decisions: List[LegalDecisionRequest]):
                 legal_feedback=request.legal_feedback,
                 risk_assessment_override=request.risk_assessment_override,
                 confidence_score=request.confidence_score or 0.0,
-                decision_timestamp=datetime.now()
+                decision_timestamp=datetime.now(),
+                tenant_id=tenant_id
             )
             
             collector.collect_decision(decision)

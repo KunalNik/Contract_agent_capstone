@@ -21,7 +21,7 @@ class OptimizedDeviationDetectorTool(EnhancedDeviationDetectorTool):
     description: str = "High-performance deviation detection with caching and monitoring"
     
     @track_performance("deviation_detection")
-    @cache_result("deviation_analysis", ttl=1800)  # 30 minutes cache
+    @cache_result("deviation_analysis", ttl=1800, method=True)  # 30 minutes cache
     def _run(self, clauses_json: str) -> str:
         """Cached and monitored deviation detection"""
         return super()._run(clauses_json)
@@ -77,7 +77,7 @@ class OptimizedJurisdictionAdapterTool(EnhancedJurisdictionAdapterTool):
     description: str = "High-performance jurisdiction adaptation with caching"
     
     @track_performance("jurisdiction_adaptation")
-    @cache_result("jurisdiction_analysis", ttl=3600)  # 1 hour cache
+    @cache_result("jurisdiction_analysis", ttl=3600, method=True)  # 1 hour cache
     def _run(self, contract_text: str, industry: str = None) -> str:
         """Cached and monitored jurisdiction adaptation"""
         return super()._run(contract_text, industry)
@@ -95,10 +95,12 @@ class OptimizedPrecedentMatcherTool(EnhancedPrecedentMatcherTool):
             clauses = json.loads(clauses_json)
             matches = []
             
+            from backend.shared.utils.request_context import current_tenant
+            tenant_id = current_tenant()
             # Process clauses in parallel for better performance
             with ThreadPoolExecutor(max_workers=5) as executor:
                 futures = {
-                    executor.submit(self._process_clause_precedents, clause): clause 
+                    executor.submit(self._process_clause_precedents, clause, tenant_id): clause
                     for clause in clauses
                 }
                 
@@ -116,11 +118,11 @@ class OptimizedPrecedentMatcherTool(EnhancedPrecedentMatcherTool):
             logger.error(f"Optimized precedent matching failed: {e}")
             return json.dumps([])
     
-    @cache_result("precedent_clause", ttl=7200)  # 2 hour cache per clause
-    def _process_clause_precedents(self, clause: Dict[str, Any]) -> Dict[str, Any]:
-        """Process precedents for individual clause with caching"""
+    @cache_result("precedent_clause", ttl=7200, method=True)  # 2 hour cache per clause
+    def _process_clause_precedents(self, clause: Dict[str, Any], tenant_id: str) -> Dict[str, Any]:
+        """Process precedents for individual clause with caching (tenant is part of the cache key)"""
         # Get real precedents from database
-        real_precedents = self._find_real_precedents(clause)
+        real_precedents = self._find_real_precedents(clause, tenant_id)
         
         if real_precedents:
             analysis = self._analyze_precedents(real_precedents, clause)

@@ -78,19 +78,16 @@ class PolicyContentValidator(PolicyValidator):
         """Validate policy content quality."""
         policy_text = policy_data['policy_text']
         
-        # Use existing content validation patterns
-        validation_result = self.content_validator.validate_file_upload({
-            'content': policy_text,
-            'file_type': 'policy',
-            'tenant_id': policy_data['tenant_id']
-        })
-        
-        if not validation_result.get('valid', False):
+        # Basic text-quality check. (This used to call validate_file_upload
+        # with the wrong keys and read a 'valid' field it never returns, so
+        # every policy upload was rejected.)
+        printable = sum(1 for ch in policy_text if ch.isprintable() or ch in "\n\r\t")
+        if not policy_text.strip() or printable / max(len(policy_text), 1) < 0.9:
             return ValidationResult(
                 passed=False,
                 score=0.4,
-                message=f"Content validation failed: {validation_result.get('message', 'Unknown error')}",
-                details=validation_result
+                message="Content validation failed: policy text is empty or not readable text",
+                details={'printable_ratio': printable / max(len(policy_text), 1)}
             )
         
         # Check for policy-specific patterns
@@ -164,8 +161,10 @@ class PolicyValidationService:
         self.content_validator = PolicyContentValidator()
         self.rule_validator = PolicyRuleValidator()
         
-        # Chain validators
-        self.structure_validator.set_next(self.content_validator).set_next(self.rule_validator)
+        # Upload chain: structure -> content. The rule validator needs extracted
+        # rules, so it runs separately after extraction (validate_policy_rules);
+        # chaining it here rejected every upload.
+        self.structure_validator.set_next(self.content_validator)
     
     def validate_policy_upload(self, policy_data: Dict[str, Any]) -> ValidationResult:
         """Validate policy for upload."""

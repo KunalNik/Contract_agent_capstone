@@ -21,6 +21,7 @@ class LegalDecision:
     risk_assessment_override: Optional[str] = None
     confidence_score: float = 0.0
     decision_timestamp: datetime = None
+    tenant_id: str = "default-tenant"
     
     def __post_init__(self):
         if self.decision_timestamp is None:
@@ -44,12 +45,18 @@ class FeedbackCollector:
         self.repository = Neo4jContractRepository()
     
     def collect_decision(self, decision: LegalDecision) -> None:
-        """Store legal team decision"""
+        """Store legal team decision.
+
+        Raises LookupError if the contract does not exist for the tenant, and
+        re-raises write failures (errors used to be swallowed while the API
+        reported success).
+        """
         try:
-            # Store decision in Neo4j
             query = """
+            MATCH (c:Contract {file_id: $contract_id, tenant_id: $tenant_id})
             MERGE (d:LegalDecision {decision_id: $decision_id})
-            SET d.contract_id = $contract_id,
+            SET d.tenant_id = $tenant_id,
+                d.contract_id = $contract_id,
                 d.clause_id = $clause_id,
                 d.clause_type = $clause_type,
                 d.original_analysis = $original_analysis,
@@ -58,16 +65,12 @@ class FeedbackCollector:
                 d.risk_assessment_override = $risk_assessment_override,
                 d.confidence_score = $confidence_score,
                 d.decision_timestamp = $decision_timestamp
-            
-            // Link to contract
-            WITH d
-            MATCH (c:Contract {file_id: $contract_id})
             MERGE (c)-[:HAS_DECISION]->(d)
-            
-            RETURN d
+            RETURN d.decision_id AS decision_id
             """
             
-            self.repository.graph.query(query, {
+            rows = self.repository.graph.query(query, {
+                "tenant_id": decision.tenant_id,
                 "decision_id": decision.decision_id,
                 "contract_id": decision.contract_id,
                 "clause_id": decision.clause_id,
@@ -79,17 +82,23 @@ class FeedbackCollector:
                 "confidence_score": decision.confidence_score,
                 "decision_timestamp": decision.decision_timestamp.isoformat()
             })
+            if not rows:
+                raise LookupError(f"Contract {decision.contract_id} not found")
             
             logger.info(f"Stored legal decision: {decision.decision_id}")
             
+        except LookupError:
+            raise
         except Exception as e:
             logger.error(f"Failed to store legal decision: {e}")
+            raise
     
-    def get_decisions_by_clause_type(self, clause_type: str, limit: int = 50) -> List[LegalDecision]:
-        """Get legal decisions for specific clause type"""
+    def get_decisions_by_clause_type(self, clause_type: str, limit: int = 50,
+                                     tenant_id: str = "default-tenant") -> List[LegalDecision]:
+        """Get legal decisions for specific clause type (one tenant's decisions only)"""
         try:
             query = """
-            MATCH (d:LegalDecision)
+            MATCH (d:LegalDecision {tenant_id: $tenant_id})
             WHERE d.clause_type = $clause_type
             RETURN d
             ORDER BY d.decision_timestamp DESC
@@ -98,7 +107,8 @@ class FeedbackCollector:
             
             results = self.repository.graph.query(query, {
                 "clause_type": clause_type,
-                "limit": limit
+                "limit": limit,
+                "tenant_id": tenant_id
             })
             
             decisions = []
@@ -109,12 +119,13 @@ class FeedbackCollector:
                     contract_id=d.get("contract_id"),
                     clause_id=d.get("clause_id"),
                     clause_type=d.get("clause_type"),
-                    original_analysis=json.loads(d.get("original_analysis", "{}")),
+                    original_analysis=json.loads(d.get("original_analysis") or "{}"),
                     legal_decision=d.get("legal_decision"),
                     legal_feedback=d.get("legal_feedback"),
                     risk_assessment_override=d.get("risk_assessment_override"),
                     confidence_score=d.get("confidence_score", 0.0),
-                    decision_timestamp=datetime.fromisoformat(d.get("decision_timestamp"))
+                    decision_timestamp=datetime.fromisoformat(d.get("decision_timestamp")) if d.get("decision_timestamp") else None,
+                    tenant_id=d.get("tenant_id") or tenant_id
                 ))
             
             return decisions
@@ -126,13 +137,15 @@ class FeedbackCollector:
 class PatternLearner:
     """Learn patterns from legal team feedback"""
     
-    def __init__(self):
+    def __init__(self, tenant_id: Optional[str] = None):
+        from backend.shared.utils.request_context import current_tenant
+        self.tenant_id = tenant_id or current_tenant()
         self.collector = FeedbackCollector()
         self.learned_patterns: List[FeedbackPattern] = []
     
     def learn_from_decisions(self, clause_type: str) -> List[FeedbackPattern]:
         """Learn patterns from legal decisions"""
-        decisions = self.collector.get_decisions_by_clause_type(clause_type)
+        decisions = self.collector.get_decisions_by_clause_type(clause_type, tenant_id=self.tenant_id)
         
         if len(decisions) < 5:  # Need minimum decisions to learn patterns
             return []
@@ -182,7 +195,7 @@ class PatternLearner:
                     "acceptable_risk_levels": common_risk_levels
                 },
                 learned_outcome="likely_approved",
-                confidence=len(decisions) / 10.0,  # Confidence based on sample size
+                confidence=min(1.0, len(decisions) / 10.0),  # Confidence based on sample size (capped)
                 usage_count=0,
                 success_rate=0.0
             )
@@ -217,7 +230,7 @@ class PatternLearner:
                     "rejection_indicators": common_rejection_reasons
                 },
                 learned_outcome="likely_rejected",
-                confidence=len(decisions) / 10.0,
+                confidence=min(1.0, len(decisions) / 10.0),
                 usage_count=0,
                 success_rate=0.0
             )
@@ -288,8 +301,8 @@ class PatternLearner:
 class AdaptiveAnalyzer:
     """Apply learned patterns to improve analysis"""
     
-    def __init__(self):
-        self.pattern_learner = PatternLearner()
+    def __init__(self, tenant_id: Optional[str] = None):
+        self.pattern_learner = PatternLearner(tenant_id)
         self.active_patterns: Dict[str, List[FeedbackPattern]] = {}
     
     def load_patterns_for_clause_type(self, clause_type: str) -> None:
@@ -340,6 +353,8 @@ class AdaptiveAnalyzer:
         
         # Check if clause matches approval pattern
         common_keywords = conditions.get("common_keywords", [])
+        if not common_keywords:
+            return None  # 0 >= 0 used to flag every clause as "likely approved"
         keyword_matches = sum(1 for keyword in common_keywords if keyword in content)
         
         if keyword_matches >= len(common_keywords) * 0.5:  # 50% keyword match

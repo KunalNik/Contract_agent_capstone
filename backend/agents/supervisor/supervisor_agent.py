@@ -26,15 +26,24 @@ class WorkflowResult:
     
     @classmethod
     def from_context(cls, context: WorkflowContext):
+        statuses = [r.status for r in context.agent_results.values()]
+        if statuses and all(s == "success" for s in statuses):
+            status = "completed"
+        elif any(s == "success" for s in statuses):
+            status = "partial"
+        else:
+            status = "failed"
         return cls(
             workflow_id=context.workflow_id,
-            status="completed",
+            status=status,
             results={agent_id: result.data for agent_id, result in context.agent_results.items()},
             summary=context.get_execution_summary()
         )
 
 class SupervisorAgent:
     """Clean supervisor following SOLID principles"""
+
+    MAX_TRACKED_WORKFLOWS = 200
     
     def __init__(self, registry: IAgentRegistry, quality_manager: IQualityManager):
         self.registry = registry
@@ -50,6 +59,9 @@ class SupervisorAgent:
         context = WorkflowContext(request.workflow_id)
         context.set_shared_data("input_data", request.input_data)
         self.active_workflows[request.workflow_id] = context
+        # Keep memory bounded: only the most recent workflows are queryable
+        while len(self.active_workflows) > self.MAX_TRACKED_WORKFLOWS:
+            self.active_workflows.pop(next(iter(self.active_workflows)))
         
         workflow_steps = self._get_workflow_steps(request.workflow_type)
         
@@ -75,7 +87,7 @@ class SupervisorAgent:
                 context.set_agent_result(step["agent_id"], error_result)
         
         result = WorkflowResult.from_context(context)
-        logger.info(f"✅ Workflow completed: {request.workflow_id}")
+        logger.info(f"✅ Workflow {result.status}: {request.workflow_id}")
         return result
     
     def _execute_step_with_protection(self, step: Dict, context: WorkflowContext) -> AgentResult:
@@ -84,8 +96,10 @@ class SupervisorAgent:
         if not agent:
             raise Exception(f"Agent not found: {step['agent_id']}")
         
+        # Steps get the workflow's input plus any step-specific input (the
+        # workflow input used to be stored but never passed to the agents)
         agent_context = AgentContext(
-            input_data=step.get("input_data", {}),
+            input_data={**context.get_shared_data("input_data", {}), **step.get("input_data", {})},
             workflow_context=context,
             correlation_id=context.workflow_id
         )

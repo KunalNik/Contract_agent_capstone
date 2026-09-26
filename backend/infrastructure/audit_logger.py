@@ -9,6 +9,7 @@ from typing import Dict, Any, Optional
 from enum import Enum
 from functools import wraps
 import json
+import uuid
 
 from backend.shared.utils.logger import get_logger
 logger = get_logger(__name__)
@@ -44,14 +45,18 @@ class AuditLogger:
         resource_id: str,
         action: str,
         user_id: Optional[str] = "system",
-        tenant_id: Optional[str] = "default-tenant",
+        tenant_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         status: str = "success",
         error_details: Optional[str] = None
     ) -> str:
-        """Log audit event to Neo4j"""
+        """Log audit event to Neo4j (tenant defaults to the current request's tenant)"""
+        from backend.shared.utils.request_context import current_tenant
+        tenant_id = tenant_id or current_tenant()
         try:
-            audit_id = f"audit_{datetime.utcnow().timestamp()}"
+            # uuid: timestamp-based ids collided under load and MERGE then
+            # silently overwrote the earlier audit record
+            audit_id = f"audit_{uuid.uuid4().hex}"
             
             query = """
             MERGE (a:AuditLog {audit_id: $audit_id})
@@ -86,11 +91,12 @@ class AuditLogger:
             logger.error(f"Failed to log audit event: {e}")
             return ""
     
-    def get_audit_trail(self, resource_id: str, limit: int = 100) -> list:
-        """Retrieve audit trail for a resource"""
+    def get_audit_trail(self, resource_id: str, limit: int = 100, tenant_id: Optional[str] = None) -> list:
+        """Retrieve audit trail for a resource (restricted to tenant_id when given)"""
         try:
             query = """
             MATCH (a:AuditLog {resource_id: $resource_id})
+            WHERE $tenant_id IS NULL OR a.tenant_id = $tenant_id
             RETURN a.audit_id as audit_id,
                    a.event_type as event_type,
                    a.action as action,
@@ -104,10 +110,12 @@ class AuditLogger:
             
             result = self.repository.graph.query(query, {
                 "resource_id": resource_id,
-                "limit": limit
+                "limit": limit,
+                "tenant_id": tenant_id
             })
             
-            return [dict(row) for row in result]
+            from backend.shared.utils.utils import to_json_safe
+            return [to_json_safe(dict(row)) for row in result]
             
         except Exception as e:
             logger.error(f"Failed to retrieve audit trail: {e}")
@@ -120,7 +128,8 @@ def audit_log(event_type: AuditEventType, action: str):
         @wraps(func)
         async def async_wrapper(*args, **kwargs):
             audit_logger = AuditLogger()
-            resource_id = kwargs.get('contract_id') or kwargs.get('file', {}).filename if 'file' in kwargs else 'unknown'
+            upload = kwargs.get('file')
+            resource_id = kwargs.get('contract_id') or (getattr(upload, 'filename', None) if upload else None) or 'unknown'
             
             try:
                 result = await func(*args, **kwargs)

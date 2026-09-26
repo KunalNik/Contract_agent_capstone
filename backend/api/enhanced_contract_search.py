@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import APIRouter, HTTPException, Depends
 from backend.governance.rbac import Permission, requires_permission
 from typing import List, Optional
@@ -75,7 +76,7 @@ async def enhanced_contract_search(request: EnhancedSearchRequest):
         )
         
         # Execute search using service
-        result = search_service.search(search_params)
+        result = await asyncio.to_thread(search_service.search, search_params)
         
         logger.info(f"Raw Search Result:")
         logger.info(f"  Total Count: {result.total_count}")
@@ -106,9 +107,9 @@ async def search_clauses(request: ClauseSearchRequest):
             query=request.query,
             clause_types=request.clause_types
         )
-        result = search_service.search(search_params)
-        
-
+        result = await asyncio.to_thread(search_service.search, search_params)
+        # (these three endpoints used to fall through and return null)
+        return SearchResponseMapper.to_api_response(result, SearchLevel.CLAUSE.value)
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Clause search failed: {str(e)}")
@@ -122,9 +123,8 @@ async def search_sections(request: SectionSearchRequest):
             query=request.query,
             section_types=request.section_types
         )
-        result = search_service.search(search_params)
-        
-
+        result = await asyncio.to_thread(search_service.search, search_params)
+        return SearchResponseMapper.to_api_response(result, SearchLevel.SECTION.value)
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Section search failed: {str(e)}")
@@ -138,9 +138,8 @@ async def search_relationships(request: RelationshipSearchRequest):
             query=request.query,
             parties=request.parties
         )
-        result = search_service.search(search_params)
-        
-
+        result = await asyncio.to_thread(search_service.search, search_params)
+        return SearchResponseMapper.to_api_response(result, SearchLevel.RELATIONSHIP.value)
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Relationship search failed: {str(e)}")

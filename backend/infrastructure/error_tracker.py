@@ -10,6 +10,7 @@ from enum import Enum
 from contextlib import contextmanager
 import traceback
 import json
+import uuid
 
 from backend.shared.utils.logger import get_logger
 logger = get_logger(__name__)
@@ -40,9 +41,11 @@ class ErrorContext:
         operation: str,
         resource_id: Optional[str] = None,
         user_id: Optional[str] = "system",
-        tenant_id: Optional[str] = "default-tenant",
+        tenant_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None
     ):
+        from backend.shared.utils.request_context import current_tenant
+        tenant_id = tenant_id or current_tenant()
         self.operation = operation
         self.resource_id = resource_id
         self.user_id = user_id
@@ -68,7 +71,7 @@ class ErrorTracker:
     ) -> str:
         """Track error with full context"""
         try:
-            error_id = f"error_{datetime.utcnow().timestamp()}"
+            error_id = f"error_{uuid.uuid4().hex}"
             
             error_data = {
                 "error_id": error_id,
@@ -115,12 +118,13 @@ class ErrorTracker:
             logger.error(f"Failed to track error: {e}")
             return ""
     
-    def get_error_statistics(self, hours: int = 24) -> Dict[str, Any]:
+    def get_error_statistics(self, hours: int = 24, tenant_id: Optional[str] = None) -> Dict[str, Any]:
         """Get error statistics for monitoring"""
         try:
             query = """
             MATCH (e:ErrorLog)
             WHERE e.timestamp > datetime() - duration({hours: $hours})
+              AND ($tenant_id IS NULL OR e.tenant_id = $tenant_id)
             RETURN 
                 e.category as category,
                 e.severity as severity,
@@ -128,7 +132,7 @@ class ErrorTracker:
             ORDER BY count DESC
             """
             
-            result = self.repository.graph.query(query, {"hours": hours})
+            result = self.repository.graph.query(query, {"hours": hours, "tenant_id": tenant_id})
             
             stats = {
                 "total_errors": sum(row["count"] for row in result),
@@ -150,11 +154,12 @@ class ErrorTracker:
             logger.error(f"Failed to get error statistics: {e}")
             return {"total_errors": 0, "by_category": {}, "by_severity": {}}
     
-    def get_recent_errors(self, limit: int = 50) -> List[Dict[str, Any]]:
+    def get_recent_errors(self, limit: int = 50, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get recent errors for debugging"""
         try:
             query = """
             MATCH (e:ErrorLog)
+            WHERE $tenant_id IS NULL OR e.tenant_id = $tenant_id
             RETURN e.error_id as error_id,
                    e.error_type as error_type,
                    e.error_message as error_message,
@@ -167,8 +172,9 @@ class ErrorTracker:
             LIMIT $limit
             """
             
-            result = self.repository.graph.query(query, {"limit": limit})
-            return [dict(row) for row in result]
+            result = self.repository.graph.query(query, {"limit": limit, "tenant_id": tenant_id})
+            from backend.shared.utils.utils import to_json_safe
+            return [to_json_safe(dict(row)) for row in result]
             
         except Exception as e:
             logger.error(f"Failed to get recent errors: {e}")
@@ -181,7 +187,7 @@ def error_tracking_context(
     severity: ErrorSeverity = ErrorSeverity.MEDIUM,
     resource_id: Optional[str] = None,
     user_id: Optional[str] = "system",
-    tenant_id: Optional[str] = "default-tenant",
+    tenant_id: Optional[str] = None,
     metadata: Optional[Dict[str, Any]] = None,
     raise_on_error: bool = True
 ):

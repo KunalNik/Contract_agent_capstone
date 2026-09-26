@@ -63,25 +63,28 @@ class PolicyRepository:
         except Exception as e:
             raise Exception(f"Failed to store policy document: {e}")
     
-    def get_policy_by_id(self, policy_id: str) -> Optional[PolicyDocument]:
-        """Get policy document by ID."""
+    def get_policy_by_id(self, policy_id: str, tenant_id: Optional[str] = None) -> Optional[PolicyDocument]:
+        """Get an active policy document by ID (restricted to tenant_id when given)."""
         try:
             query = """
-            MATCH (p:PolicyDocument {id: $policy_id})-[:HAS_RULE]->(r:PolicyRule)
+            MATCH (p:PolicyDocument {id: $policy_id})
+            WHERE coalesce(p.active, true) AND ($tenant_id IS NULL OR p.tenant_id = $tenant_id)
+            OPTIONAL MATCH (p)-[:HAS_RULE]->(r:PolicyRule)
+            WITH p, r
             RETURN p.id as id, p.name as name, p.tenant_id as tenant_id,
                    p.version as version, p.created_at as created_at,
                    p.updated_at as updated_at, p.checksum as checksum,
-                   collect({
+                   collect(CASE WHEN r IS NULL THEN NULL ELSE {
                        id: r.id,
                        rule_text: r.rule_text,
                        rule_type: r.rule_type,
                        applies_to: r.applies_to,
                        severity: r.severity,
                        section_reference: r.section_reference
-                   }) as rules
+                   } END) as rules
             """
             
-            result = self.graph.query(query, {'policy_id': policy_id})
+            result = self.graph.query(query, {'policy_id': policy_id, 'tenant_id': tenant_id})
             
             if result:
                 record = result[0]
@@ -117,6 +120,7 @@ class PolicyRepository:
         try:
             query = """
             MATCH (p:PolicyDocument {tenant_id: $tenant_id})
+            WHERE coalesce(p.active, true)
             OPTIONAL MATCH (p)-[:HAS_RULE]->(r:PolicyRule)
             RETURN p.id as id, p.name as name, p.version as version,
                    p.created_at as created_at, p.checksum as checksum,
@@ -152,7 +156,8 @@ class PolicyRepository:
         try:
             query = """
             MATCH (p:PolicyDocument {tenant_id: $tenant_id})-[:HAS_RULE]->(r:PolicyRule)
-            WHERE $contract_type IN r.applies_to OR 'general' IN r.applies_to
+            WHERE coalesce(p.active, true)
+              AND ($contract_type IN r.applies_to OR 'general' IN r.applies_to)
             RETURN r.id as id, r.rule_text as rule_text, r.rule_type as rule_type,
                    r.applies_to as applies_to, r.severity as severity,
                    r.section_reference as section_reference
@@ -194,11 +199,14 @@ class PolicyRepository:
             query_embedding = self.embedding_service.embed_query(query_text)
             
             # Search using existing vector similarity patterns
+            # Rules carry their own embeddings (written at upload). Uses the
+            # built-in vector.similarity.cosine instead of the GDS plugin, which
+            # is not available on Aura Free / community installs.
             search_query = """
             MATCH (p:PolicyDocument {tenant_id: $tenant_id})-[:HAS_RULE]->(r:PolicyRule)
-            WHERE p.embedding IS NOT NULL
-            WITH p, r, gds.similarity.cosine(p.embedding, $query_embedding) AS similarity
-            WHERE similarity > 0.7
+            WHERE coalesce(p.active, true) AND r.embedding IS NOT NULL
+            WITH p, r, vector.similarity.cosine(r.embedding, $query_embedding) AS similarity
+            WHERE similarity > 0.6
             RETURN p.id as policy_id, p.name as policy_name,
                    r.id as rule_id, r.rule_text as rule_text,
                    r.severity as severity, similarity
@@ -313,16 +321,17 @@ class PolicyRepository:
         except Exception as e:
             raise Exception(f"Failed to update policy version: {e}")
     
-    def delete_policy(self, policy_id: str) -> bool:
-        """Soft delete policy by marking as inactive."""
+    def delete_policy(self, policy_id: str, tenant_id: Optional[str] = None) -> bool:
+        """Soft delete policy by marking as inactive. Returns False if no such active policy."""
         try:
             query = """
             MATCH (p:PolicyDocument {id: $policy_id})
+            WHERE coalesce(p.active, true) AND ($tenant_id IS NULL OR p.tenant_id = $tenant_id)
             SET p.active = false, p.deleted_at = datetime()
+            RETURN p.id AS id
             """
             
-            self.graph.query(query, {'policy_id': policy_id})
-            return True
+            return bool(self.graph.query(query, {'policy_id': policy_id, 'tenant_id': tenant_id}))
             
         except Exception as e:
             raise Exception(f"Failed to delete policy: {e}")

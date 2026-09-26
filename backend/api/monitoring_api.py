@@ -3,7 +3,7 @@ from backend.governance.rbac import Permission, requires_permission
 from typing import Dict, List, Any, Optional
 import logging
 from backend.shared.monitoring.performance_monitor import monitor
-from backend.shared.cache.redis_cache import cache
+from backend.shared.cache.redis_cache import cache, InMemoryCache
 from backend.agents.optimized_cuad_tools import BatchProcessor
 import asyncio
 
@@ -20,7 +20,7 @@ async def get_performance_metrics():
         
         # Add cache statistics
         cache_stats = {
-            "cache_type": "redis" if hasattr(cache.redis_client, 'ping') else "in_memory",
+            "cache_type": "in_memory" if isinstance(cache.redis_client, InMemoryCache) else "redis",
             "cache_status": "connected" if cache.redis_client else "disconnected"
         }
         
@@ -217,7 +217,7 @@ async def get_system_info():
                 "disk_percent": psutil.disk_usage('/').percent
             },
             "configuration": {
-                "cache_type": "redis" if hasattr(cache.redis_client, 'ping') else "in_memory",
+                "cache_type": "in_memory" if isinstance(cache.redis_client, InMemoryCache) else "redis",
                 "performance_monitoring": "enabled",
                 "alert_thresholds": monitor.alert_thresholds
             },
@@ -231,7 +231,7 @@ async def get_system_info():
         return {
             "system": {"note": "System metrics require psutil package"},
             "configuration": {
-                "cache_type": "redis" if hasattr(cache.redis_client, 'ping') else "in_memory",
+                "cache_type": "in_memory" if isinstance(cache.redis_client, InMemoryCache) else "redis",
                 "performance_monitoring": "enabled",
                 "alert_thresholds": monitor.alert_thresholds
             }

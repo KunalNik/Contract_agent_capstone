@@ -1,99 +1,68 @@
-"""Policy workflow orchestrator using existing supervisor patterns."""
+"""Policy workflow orchestrator: chunk the policy, then extract and store its rules."""
 
-from typing import Dict, Any, List
-from backend.agents.supervisor.supervisor_agent import SupervisorAgent
-from backend.agents.supervisor.agent_registry import AgentRegistry
+from typing import Dict, Any
+
 from backend.agents.supervisor.interfaces import AgentContext, WorkflowContext
+from backend.agents.supervisor.agent_registry import AgentRegistry
 from backend.agents.policy_agents import PolicyChunkingAgent, PolicyExtractionAgent, PolicyComplianceAgent
 
 
 class PolicyWorkflowOrchestrator:
-    """Orchestrates policy workflows using existing supervisor infrastructure."""
-    
+    """Orchestrates policy workflows.
+
+    (It used to construct ``SupervisorAgent()`` without its required
+    arguments, so every policy upload failed before doing any work.)
+    """
+
     def __init__(self):
-        self.supervisor = SupervisorAgent()
         self.registry = AgentRegistry()
-        
-        # Register policy agents with existing registry
         self.registry.register_agent('policy_chunking', PolicyChunkingAgent())
         self.registry.register_agent('policy_extraction', PolicyExtractionAgent())
         self.registry.register_agent('policy_compliance', PolicyComplianceAgent())
-    
+
     async def process_policy_document(self, policy_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Process policy document using existing workflow orchestration."""
+        """Chunk the policy text, then extract, embed and store its rules."""
         workflow_context = WorkflowContext(
             workflow_id=f"policy_workflow_{policy_data.get('tenant_id', 'unknown')}",
             workflow_type="policy_processing",
-            context_data=policy_data
+            context_data={k: v for k, v in policy_data.items() if k != 'policy_text'}
         )
-        
-        # Define workflow steps using existing patterns
-        workflow_steps = [
-            {
-                'agent_id': 'policy_chunking',
-                'input_data': {
-                    'policy_text': policy_data['policy_text'],
-                    'tenant_id': policy_data['tenant_id'],
-                    'policy_name': policy_data.get('policy_name', 'Unknown Policy')
-                }
-            },
-            {
-                'agent_id': 'policy_extraction',
-                'input_data': {
-                    'document_id': '${previous_result.document_id}',  # Reference previous step
-                    'tenant_id': policy_data['tenant_id']
-                }
-            }
-        ]
-        
-        # Execute workflow using existing supervisor
+
         results = []
-        previous_result = None
-        
-        for step in workflow_steps:
-            # Resolve references to previous results
-            input_data = self._resolve_references(step['input_data'], previous_result)
-            
-            context = AgentContext(
-                input_data=input_data,
-                workflow_context=workflow_context
-            )
-            
-            agent = self.registry.get_agent(step['agent_id'])
-            result = agent.execute(context)
-            
-            results.append({
-                'agent_id': step['agent_id'],
-                'status': result.status,
-                'data': result.data,
-                'confidence': result.confidence
-            })
-            
-            previous_result = result.data
-            
-            # Stop on error
-            if result.status != 'success':
-                break
-        
+        chunking = await self.registry.get_agent('policy_chunking').aexecute(AgentContext(
+            input_data={
+                'policy_text': policy_data['policy_text'],
+                'tenant_id': policy_data['tenant_id'],
+                'policy_name': policy_data.get('policy_name', 'Unknown Policy'),
+            },
+            workflow_context=workflow_context,
+        ))
+        results.append({'agent_id': 'policy_chunking', 'status': chunking.status,
+                        'data': {k: v for k, v in chunking.data.items() if k != 'chunks'},
+                        'confidence': chunking.confidence})
+        final_result = chunking.data
+
+        if chunking.status == 'success':
+            extraction = await self.registry.get_agent('policy_extraction').aexecute(AgentContext(
+                input_data={
+                    'document_id': chunking.data['document_id'],
+                    'tenant_id': policy_data['tenant_id'],
+                    'chunks': chunking.data.get('chunks', []),
+                    'policy_name': policy_data.get('policy_name', 'Untitled Policy'),
+                    'version': policy_data.get('version', '1.0'),
+                    'policy_type': policy_data.get('policy_type', 'compliance'),
+                },
+                workflow_context=workflow_context,
+            ))
+            results.append({'agent_id': 'policy_extraction', 'status': extraction.status,
+                            'data': extraction.data, 'confidence': extraction.confidence})
+            final_result = extraction.data
+
         return {
             'workflow_id': workflow_context.workflow_id,
             'status': 'success' if all(r['status'] == 'success' for r in results) else 'error',
             'steps': results,
-            'final_result': previous_result
+            'final_result': final_result,
+            'chunks_created': chunking.data.get('chunks_created', 0),
+            'rules_extracted': final_result.get('rules_extracted', 0),
         }
-    
-    def _resolve_references(self, input_data: Dict[str, Any], previous_result: Dict[str, Any]) -> Dict[str, Any]:
-        """Resolve references to previous step results."""
-        if not previous_result:
-            return input_data
-        
-        resolved = {}
-        for key, value in input_data.items():
-            if isinstance(value, str) and value.startswith('${previous_result.'):
-                # Extract field name from reference
-                field_name = value.replace('${previous_result.', '').replace('}', '')
-                resolved[key] = previous_result.get(field_name, value)
-            else:
-                resolved[key] = value
-        
-        return resolved

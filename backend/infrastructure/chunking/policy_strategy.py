@@ -7,6 +7,13 @@ from backend.infrastructure.chunking.base_strategy import IChunkingStrategy
 
 class PolicyChunkingStrategy(IChunkingStrategy):
     """Legal-aware chunking for policy documents using existing infrastructure."""
+
+    def __init__(self, max_chunk_size: int = 1000, **kwargs):
+        self.max_chunk_size = max_chunk_size
+
+    def get_chunk_size(self) -> int:
+        """Required by IChunkingStrategy (its absence made the class impossible to instantiate)."""
+        return self.max_chunk_size
     
     def chunk_document(self, text: str, metadata: Dict[str, Any] = None) -> List[Dict[str, Any]]:
         """Chunk policy document by legal sections and rules."""

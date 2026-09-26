@@ -19,27 +19,17 @@ class BaseAgentAdapter(IAgent):
         self.agent_type = config.agent_type
     
     def execute(self, context: AgentContext) -> AgentResult:
-        """Template method - same flow for all adapters"""
-        try:
-            # Prepare input in agent-specific format
-            input_data = self.prepare_input(context)
-            
-            # Call the actual agent
-            raw_result = self.call_agent(input_data)
-            
-            # Format output to standard format
-            result = self.format_output(raw_result)
-            result.agent_id = self.agent_id
-            
-            return result
-            
-        except Exception as e:
-            return AgentResult(
-                status="error",
-                data={"error": str(e)},
-                confidence=0.0,
-                agent_id=self.agent_id
-            )
+        """Template method - same flow for all adapters.
+
+        Unexpected exceptions propagate so the supervisor's retry manager and
+        circuit breaker can act on them (swallowing them here made both dead
+        code); the supervisor turns a final failure into an error result.
+        """
+        input_data = self.prepare_input(context)
+        raw_result = self.call_agent(input_data)
+        result = self.format_output(raw_result)
+        result.agent_id = self.agent_id
+        return result
     
     def get_capabilities(self) -> List[str]:
         return self.config.capabilities

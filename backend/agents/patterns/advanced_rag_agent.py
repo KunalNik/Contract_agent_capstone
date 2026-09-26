@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import logging
 
 from backend.shared.utils.contract_search_tool import graph, embedding
+from backend.shared.utils.request_context import current_tenant
+from backend.shared.utils.utils import convert_neo4j_date
 
 from backend.shared.utils.logger import get_logger
 logger = get_logger(__name__)
@@ -70,9 +72,9 @@ class AdvancedRAGAgent:
         try:
             # Use existing Neo4j vector search
             cypher_query = """
-            MATCH (c:Contract)
-            WHERE c.file_id <> $exclude_id AND c.embedding IS NOT NULL
-            WITH c, gds.similarity.cosine(c.embedding, $query_embedding) AS similarity
+            MATCH (c:Contract {tenant_id: $tenant_id})
+            WHERE c.file_id <> $exclude_id AND c.embedding IS NOT NULL AND size(c.embedding) > 0
+            WITH c, vector.similarity.cosine(c.embedding, $query_embedding) AS similarity
             WHERE similarity > 0.7
             RETURN c.file_id as contract_id, c.summary as summary, 
                    c.contract_type as contract_type, c.effective_date as effective_date,
@@ -83,10 +85,11 @@ class AdvancedRAGAgent:
             
             result = graph.query(cypher_query, {
                 'query_embedding': query_embedding,
-                'exclude_id': exclude_contract_id
+                'exclude_id': exclude_contract_id,
+                'tenant_id': current_tenant(),
             })
             
-            return [dict(record) for record in result]
+            return [convert_neo4j_date(dict(record)) for record in result]
             
         except Exception as e:
             logger.error(f"Error finding similar contracts: {e}")
@@ -107,10 +110,10 @@ class AdvancedRAGAgent:
             try:
                 # Search for precedent patterns in existing contracts
                 precedent_query = """
-                MATCH (c:Contract)
+                MATCH (c:Contract {tenant_id: $tenant_id})
                 WHERE c.contract_type = $contract_type
-                WITH c, c.summary as summary
-                WHERE toLower(summary) CONTAINS toLower($query_term)
+                WITH c, coalesce(c.summary, '') as summary
+                WHERE any(term IN $query_terms WHERE toLower(summary) CONTAINS term)
                 RETURN c.file_id as contract_id, c.summary as summary,
                        c.contract_type as contract_type, c.effective_date as date,
                        'precedent' as type
@@ -118,12 +121,16 @@ class AdvancedRAGAgent:
                 LIMIT 3
                 """
                 
+                # Match any meaningful query word (the whole question as one
+                # substring almost never matched a summary)
+                terms = [t for t in query.lower().split() if len(t) > 3] or [query.lower()]
                 result = graph.query(precedent_query, {
                     'contract_type': contract_type,
-                    'query_term': query
+                    'query_terms': terms,
+                    'tenant_id': current_tenant(),
                 })
                 
-                precedents.extend([dict(record) for record in result])
+                precedents.extend([convert_neo4j_date(dict(record)) for record in result])
                 
             except Exception as e:
                 logger.error(f"Error finding precedents for {contract_type}: {e}")
@@ -134,7 +141,7 @@ class AdvancedRAGAgent:
         try:
             # Get company's historical contract patterns
             history_query = """
-            MATCH (c:Contract)
+            MATCH (c:Contract {tenant_id: $tenant_id})
             WHERE c.file_id <> $current_id
             WITH c
             ORDER BY c.effective_date DESC
@@ -144,16 +151,16 @@ class AdvancedRAGAgent:
             LIMIT 10
             """
             
-            result = graph.query(history_query, {'current_id': current_contract_id})
-            history = [dict(record) for record in result]
+            result = graph.query(history_query, {'current_id': current_contract_id, 'tenant_id': current_tenant()})
+            history = [convert_neo4j_date(dict(record)) for record in result]
             
             # Filter history relevant to query
             relevant_history = []
             query_lower = query.lower()
             
             for contract in history:
-                summary = contract.get('summary', '').lower()
-                contract_type = contract.get('contract_type', '').lower()
+                summary = (contract.get('summary') or '').lower()
+                contract_type = (contract.get('contract_type') or '').lower()
                 
                 if (query_lower in summary or 
                     any(term in summary for term in query_lower.split()) or

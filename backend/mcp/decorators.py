@@ -1,4 +1,5 @@
 import functools
+import os
 import uuid
 import asyncio
 import json
@@ -25,6 +26,16 @@ def mcp_tool_wrapper(func: Callable) -> Callable:
         if not tenant_id:
             logger.error(f"Missing tenant_id in tool {func.__name__}", ValueError("Missing mandatory 'tenant_id' parameter"))
             return json.dumps({"error": "Missing mandatory 'tenant_id' parameter", "status": "failed", "trace_id": tid})
+
+        # The MCP client chooses tenant_id freely. When this server is deployed
+        # for one organisation, pin it with MCP_TENANT_ID so no other tenant's
+        # data can be requested.
+        pinned = os.getenv("MCP_TENANT_ID")
+        if pinned and tenant_id != pinned:
+            logger.error(f"Tenant {tenant_id} not permitted for tool {func.__name__}", PermissionError("tenant mismatch"))
+            return json.dumps({"error": "tenant_id not permitted for this server", "status": "failed", "trace_id": tid})
+        from backend.shared.utils.request_context import tenant_id_var
+        tenant_id_var.set(tenant_id)
 
         # 3. Log execution
         logger.log_tool_execution(func.__name__, tenant_id, metadata={"args": str(args), "kwargs": str(kwargs)})

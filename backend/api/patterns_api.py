@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, HTTPException, Depends
 from backend.governance.rbac import Permission, requires_permission
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Dict, Any, List, Optional
 
 from backend.agents.patterns.pattern_orchestrator import PatternOrchestratorFactory
@@ -19,6 +19,7 @@ class PatternRequest(BaseModel):
     clauses: Optional[List[Dict[str, Any]]] = None
     policies: Optional[Dict[str, Any]] = None
     target_clause: Optional[str] = None
+    max_iterations: int = Field(3, ge=1, le=10)
 
 
 class PatternResponse(BaseModel):
@@ -39,11 +40,12 @@ async def analyze_with_patterns(request: PatternRequest):
             'task_type': request.task_type,
             'patterns': request.patterns,
             'query': request.query,
-            'contract_text': request.contract_text,
-            'contract_id': request.contract_id,
+            'contract_text': request.contract_text or '',
+            'contract_id': request.contract_id or '',
             'clauses': request.clauses or [],
             'policies': request.policies or {},
-            'target_clause': request.target_clause
+            'target_clause': request.target_clause,
+            'max_iterations': request.max_iterations,
         }
         
         result = await orchestrator.process(context)
@@ -74,15 +76,15 @@ async def react_analysis(request: PatternRequest):
     try:
         from backend.agents.patterns.react_agent import ReACTAgent
         
-        agent = ReACTAgent(max_iterations=request.patterns[0] if request.patterns else 3)
+        agent = ReACTAgent(max_iterations=request.max_iterations)
         
         context = {
             'query': request.query,
-            'contract_text': request.contract_text or ''
+            'contract_text': request.contract_text or '',
+            'contract_id': request.contract_id or 'unknown'
         }
         
-        result = await agent.process(context)
-        return result
+        return await agent.execute(context)
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -101,11 +103,11 @@ async def chain_of_thought_analysis(request: PatternRequest):
             'clauses': request.clauses or [],
             'policies': request.policies or {},
             'contract_text': request.contract_text or '',
-            'target_clause': request.target_clause or request.query
+            'target_clause': request.target_clause or request.query,
+            'contract_id': request.contract_id or 'unknown'
         }
         
-        result = await agent.process(context)
-        return result
+        return await agent.execute(context)
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
