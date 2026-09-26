@@ -1,12 +1,23 @@
 import json
 import logging
+import os
+import sys
+
+# Allow `python backend/mcp_server.py` from the repo root without PYTHONPATH:
+# make the repo root importable (for `backend.*`) and drop the script's own
+# folder so nothing in backend/ can shadow third-party packages.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_BACKEND_DIR = os.path.join(_REPO_ROOT, "backend")
+sys.path[:] = [p for p in sys.path if os.path.abspath(p or ".") != _BACKEND_DIR]
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 from typing import Any, Dict, List, Optional
 from fastmcp import FastMCP
 
 from backend.infrastructure.policy_repository import PolicyRepository
 from backend.infrastructure.contract_repository import Neo4jContractRepository
 from backend.agents.enhanced_cuad_tools import EnhancedPrecedentMatcherTool
-from backend.mcp.decorators import mcp_tool_wrapper
+from backend.mcp_support.decorators import mcp_tool_wrapper
 from backend.shared.utils.mcp_logger import get_mcp_logger
 
 # Initialize FastMCP server

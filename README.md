@@ -123,12 +123,42 @@ While the current platform is a complete capstone implementation, several featur
 ---
 *Created as part of a Legal AI Capstone Project.*
 
-5. **Run the MCP Server**:
+5. **Install the backend environment** (needed to run anything outside Docker):
    ```bash
-   PYTHONPATH=. python3 backend/mcp_server.py
+   cd backend
+   uv sync          # creates backend/.venv with all dependencies
+   cd ..
    ```
+   Always run backend scripts with this environment's Python, not the system `python`
+   (which does not have `fastmcp`, `langgraph`, etc.):
 
-6. **Verify Installation**:
+   | | macOS / Linux | Windows PowerShell |
+   |---|---|---|
+   | Python | `backend/.venv/bin/python` | `backend\.venv\Scripts\python.exe` |
+
+6. **Run the MCP Server** (stdio transport - it waits silently for an MCP client; stop with Ctrl+C):
    ```bash
-   PYTHONPATH=. python3 backend/tests/test_mcp_capabilities.py
+   # macOS / Linux
+   backend/.venv/bin/python backend/mcp_server.py
+   ```
+   ```powershell
+   # Windows PowerShell
+   backend\.venv\Scripts\python.exe backend\mcp_server.py
+   ```
+   To use it from Claude Desktop, add to `claude_desktop_config.json` (use absolute paths):
+   ```json
+   {
+     "mcpServers": {
+       "contract-intelligence": {
+         "command": "K:/path/to/Contract_agent_capstone/backend/.venv/Scripts/python.exe",
+         "args": ["K:/path/to/Contract_agent_capstone/backend/mcp_server.py"]
+       }
+     }
+   }
+   ```
+   Set `MCP_TENANT_ID` in `.env` to restrict the server to one tenant.
+
+7. **Run the tests** (offline - Neo4j and the LLMs are stubbed):
+   ```bash
+   backend/.venv/bin/python -m pytest -q          # Windows: backend\.venv\Scripts\python.exe -m pytest -q
    ```
