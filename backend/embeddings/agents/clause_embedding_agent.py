@@ -72,7 +72,12 @@ class ClauseEmbeddingAgent(EmbeddingAgent):
             "Payment Terms": [
                 r"payment.*due",
                 r"invoice.*pay",
-                r"fee.*amount"
+                r"fee.*amount",
+                # "pay all invoices", "paid against invoices": pay before invoice
+                r"\bpa(?:y|id)\b.*\binvoices?\b",
+                # "invoice shall be paid": "paid" doesn't contain "pay"
+                r"\binvoices?\b.*\bpaid\b",
+                r"\bpayment terms\b"
             ]
         }
     
