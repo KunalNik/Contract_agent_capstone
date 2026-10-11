@@ -23,43 +23,37 @@ interface ContractHistoryContextType {
 
 const ContractHistoryContext = createContext<ContractHistoryContextType | undefined>(undefined);
 
+const STORAGE_KEY = 'contract_history';
+
+// Read once, synchronously, when the state is created. Loading in a separate effect let the
+// save effect run first with an empty list, and React StrictMode's double effect run in
+// development then wiped the stored history on every page reload.
+const loadHistory = (): ContractRecord[] => {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]');
+    if (!Array.isArray(parsed)) return [];
+    // Invalid entries are dropped here; the save effect then rewrites storage without them
+    return parsed.filter((contract: Partial<ContractRecord>) =>
+      contract.contract_id &&
+      contract.filename &&
+      contract.upload_date &&
+      contract.model_used !== undefined &&
+      contract.analysis_completed !== undefined
+    ) as ContractRecord[];
+  } catch {
+    return []; // corrupted data, or storage unavailable (private window, blocked site data)
+  }
+};
+
 export const ContractHistoryProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [contracts, setContracts] = useState<ContractRecord[]>([]);
+  const [contracts, setContracts] = useState<ContractRecord[]>(loadHistory);
   const [selectedContractId, setSelectedContractId] = useState<string | null>(null);
-
-  // Load from localStorage on mount with validation
-  useEffect(() => {
-    const saved = localStorage.getItem('contract_history');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        // Validate contract data structure
-        const validContracts = parsed.filter((contract: any) =>
-          contract.contract_id &&
-          contract.filename &&
-          contract.upload_date &&
-          contract.model_used !== undefined &&
-          contract.analysis_completed !== undefined
-        );
-        setContracts(validContracts);
-
-        // Clean up localStorage if we filtered out invalid contracts
-        if (validContracts.length !== parsed.length) {
-          localStorage.setItem('contract_history', JSON.stringify(validContracts));
-        }
-      } catch (e) {
-        // removed console error
-        localStorage.removeItem('contract_history'); // Clear corrupted data
-      }
-    }
-  }, []);
 
   // Save to localStorage whenever contracts change with error handling
   useEffect(() => {
     try {
-      localStorage.setItem('contract_history', JSON.stringify(contracts));
-    } catch (e) {
-      // removed console error
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(contracts));
+    } catch {
       // If localStorage is full, remove oldest contracts
       if (contracts.length > 10) {
         const trimmed = contracts.slice(0, 10);
@@ -96,7 +90,11 @@ export const ContractHistoryProvider: React.FC<{ children: React.ReactNode }> = 
 
   const clearHistory = () => {
     setContracts([]);
-    localStorage.removeItem('contract_history');
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch {
+      // storage unavailable; the in-memory list is already cleared
+    }
   };
 
   return (
