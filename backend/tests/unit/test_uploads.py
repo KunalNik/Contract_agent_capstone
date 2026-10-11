@@ -16,6 +16,15 @@ ANALYSIS = json.dumps({
 })
 
 
+@pytest.mark.skipif("UPLOAD_TMP_DIR" in os.environ, reason="explicit UPLOAD_TMP_DIR overrides the default")
+def test_default_upload_dir_is_the_os_temp_dir():
+    # The old "/tmp" default does not exist on Windows, so every upload failed with ENOENT
+    import tempfile
+    import backend.api.document_upload as du
+    assert du.UPLOAD_DIR == tempfile.gettempdir()
+    assert os.path.isdir(os.path.dirname(du.safe_temp_path("Clean_MSA.pdf")))
+
+
 @pytest.fixture
 def pdf_bytes():
     return make_pdf(SAMPLE_CONTRACT_LINES)

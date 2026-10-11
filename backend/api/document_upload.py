@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import re
+import tempfile
 import uuid
 
 from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Query, Depends, Request
@@ -22,7 +23,8 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
-UPLOAD_DIR = os.getenv("UPLOAD_TMP_DIR", "/tmp")
+# OS temp dir by default: a hardcoded "/tmp" does not exist on Windows
+UPLOAD_DIR = os.getenv("UPLOAD_TMP_DIR") or tempfile.gettempdir()
 
 
 # Dependency injection
