@@ -34,6 +34,7 @@ MODEL_REGISTRY = {
     "gemini-2.5-pro": (("GOOGLE_API_KEY", "GEMINI_API_KEY"), lambda: _gemini("gemini-2.5-pro")),
     "gemini-2.5-flash": (("GOOGLE_API_KEY", "GEMINI_API_KEY"), lambda: _gemini("gemini-2.5-flash")),
     "claude-sonnet": (("ANTHROPIC_API_KEY",), lambda: _anthropic(os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5"))),
+    "claude-haiku": (("ANTHROPIC_API_KEY",), lambda: _anthropic("claude-haiku-4-5")),
     "mistral-large": (("MISTRAL_API_KEY",), lambda: _mistral("mistral-large-latest")),
 }
 
