@@ -54,8 +54,12 @@ async def lifespan(app: FastAPI):
     # Startup - build models once and share them with guards and agents
     app.state.llm_manager = LLMManager()
     set_shared_llm_manager(app.state.llm_manager)
+    # Idempotent schema migrations, off the event loop so startup never waits on the database
+    from backend.migrations.runner import apply_pending_on_startup
+    app.state.migrations_task = asyncio.create_task(asyncio.to_thread(apply_pending_on_startup))
     yield
-    # Shutdown - cleanup if needed
+    # Shutdown - let an in-flight migration finish (bounded) rather than abandon it
+    await asyncio.wait({app.state.migrations_task}, timeout=10)
 
 app = FastAPI(lifespan=lifespan)
 
@@ -108,6 +112,10 @@ app.include_router(patterns_router)
 # Policy Management API
 from backend.api.policy_api import router as policy_router
 app.include_router(policy_router)
+
+# Cross-Contract Conflict Radar API
+from backend.api.conflict_radar_api import router as conflict_radar_router
+app.include_router(conflict_radar_router)
 
 # Debug routes (development only)
 debug_router = create_debug_router()

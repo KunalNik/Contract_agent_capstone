@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { DocumentUpload } from '../components/features/contracts/DocumentUpload';
 import { ContractIntelligence } from '../components/features/intelligence/ContractIntelligence';
+import { ConflictRadar } from '../components/features/intelligence/ConflictRadar';
 import { AgentWorkflowTracker } from '../components/features/agents/AgentWorkflowTracker';
 import { Card } from '../components/shared/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/shared/ui/select';
@@ -221,6 +222,18 @@ export const IntelligencePage: React.FC = () => {
           </div>
         </Card>
       </div>
+
+      {uploadResult?.contract_id && (
+        <Card className="bg-white border-slate-200 shadow-sm">
+          <div className="p-6">
+            <ConflictRadar
+              contractId={uploadResult.contract_id}
+              model={selectedModel}
+              contractOptions={contracts}
+            />
+          </div>
+        </Card>
+      )}
     </div>
   );
 };
